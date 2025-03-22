@@ -50,12 +50,19 @@ class PC88: ObservableObject {
     private var previousFm1Fnum: UInt16 = 0
     private var previousFm1Volume: Int = 0
     private var previousSongDataAddr: UInt16 = 0
+    private var previousKeyOnRegValue: UInt8 = 0
     
     // FM1チャンネルの追加情報
     @Published var fm1FnumValue = "0x0000"          // BLOCK/FNUM値
     @Published var fm1Volume = 0                     // 音量
     @Published var fm1Length = 0                     // 残りの長さ
     @Published var fm1PartLoop = "0x0000"           // 演奏終了時の戻り先
+    @Published var fm1NoteName = "---"               // 音名
+    @Published var fm1Instrument = 0                 // 音色番号
+    
+    // キーオン状態の詳細情報
+    @Published var isFM1KeyOn = false               // FM1チャンネルがキーオンされているか
+    @Published var activeSlots = ""                  // アクティブなスロット
     
     // 追加モニタリング情報
     @Published var songDataAddress = "0x0000"        // 曲データアドレス
@@ -747,11 +754,11 @@ class PC88: ObservableObject {
     // PMD88のワークエリアをデバッグ表示する関数
     // 重要なレジスタの状態を確認するメソッド
     func checkCriticalRegisters() {
-        appendLog("=== 重要なOPNAレジスタ状態確認 ===")
+        appendLog("=== 重要なOPNAレジスタ状態確認 ===\n")
         
         // キーオンレジスタ (0x28)
         let keyOnReg = cpu.opnaRegisters[0x28]
-        appendLog("キーオンレジスタ(0x28): \(String(format: "0x%02X", keyOnReg))")
+        appendLog("🎹 キーオンレジスタ(0x28): 0x\(String(format: "%02X", keyOnReg))")
         
         // チャンネル情報の解析
         let channelRaw = Int(keyOnReg & 0x07)
@@ -759,31 +766,161 @@ class PC88: ObservableObject {
         let slotMask = (keyOnReg >> 4) & 0x0F
         let channel = isExtended ? channelRaw + 3 : channelRaw
         
+        // キーオン状態の詳細分析
         appendLog("  - チャンネル: \(channel) (raw: \(channelRaw), 拡張: \(isExtended ? "あり" : "なし"))")
         appendLog("  - スロットマスク: \(String(format: "%04b", slotMask))")
         
+        // スロットマスクの詳細解析
+        var activeSlots = [Int]()
+        if (slotMask & 0x01) != 0 { activeSlots.append(1) }
+        if (slotMask & 0x02) != 0 { activeSlots.append(2) }
+        if (slotMask & 0x04) != 0 { activeSlots.append(3) }
+        if (slotMask & 0x08) != 0 { activeSlots.append(4) }
+        
+        if !activeSlots.isEmpty {
+            appendLog("  - アクティブスロット: \(activeSlots.map { String($0) }.joined(separator: ", "))")
+            appendLog("  - キーオン状態: チャンネル\(channel)\(isExtended ? "(拡張)" : "")")
+        } else {
+            appendLog("  - キーオフ状態")
+        }
+        
+        // レジスタ0x27 (チャンネルモードとタイマー制御)
+        let modeReg = cpu.opnaRegisters[0x27]
+        appendLog("\n🔁 チャンネルモードレジスタ(0x27): 0x\(String(format: "%02X", modeReg))")
+        
         // 各FMチャンネルの周波数設定を確認
-        appendLog("各FMチャンネルの周波数設定:")
-        for ch in 0..<6 {
-            // チャンネル番号の調整（0-2は通常のチャンネル、3-5は拡張チャンネル）
-            let regOffset = ch < 3 ? ch : ch + 1
+        appendLog("\n🎵 各FMチャンネルのパラメータ:")
+        for ch in 0..<3 { // まずは基本チャンネルのみ確認
+            // チャンネル番号の調整
+            let regOffset = ch
             
             if 0xA0 + regOffset < cpu.opnaRegisters.count && 0xA4 + regOffset < cpu.opnaRegisters.count {
+                // FNUMとBLOCK取得
                 let freqLow = cpu.opnaRegisters[Int(0xA0 + regOffset)]
                 let freqHighBlock = cpu.opnaRegisters[Int(0xA4 + regOffset)]
                 
                 let fnum = Int(freqLow) + ((Int(freqHighBlock) & 0x07) << 8)
                 let block = Int((freqHighBlock >> 3) & 0x07)
                 
-                appendLog("  - CH\(ch): F-Number=\(fnum), Block=\(block)")
+                // フィードバックとアルゴリズム
+                let fbAlgReg = 0xB0 + regOffset
+                let fbAlg = cpu.opnaRegisters[fbAlgReg]
+                let feedback = (fbAlg >> 3) & 0x07
+                let algorithm = fbAlg & 0x07
+                
+                appendLog("  - CH\(ch+1): FNUM=0x\(String(format: "%03X", fnum)), BLOCK=\(block), FB=\(feedback), ALG=\(algorithm)")
+                
+                // 音名を計算
+                let noteName = calculateNoteName(fnum: UInt16(fnum), block: UInt8(block))
+                appendLog("    音名: \(noteName)")
+                
+                // オペレータパラメータの確認
+                appendLog("    オペレータパラメータ:")
+                for op in 0...3 {
+                    // オペレータオフセット計算
+                    let opOffset = (regOffset * 4) + op
+                    
+                    if 0x30 + opOffset < cpu.opnaRegisters.count {
+                        let dt1_mul = cpu.opnaRegisters[0x30 + opOffset]
+                        let tl = cpu.opnaRegisters[0x40 + opOffset]
+                        
+                        // パラメータの分解
+                        let dt1 = (dt1_mul >> 4) & 0x07
+                        let mul = dt1_mul & 0x0F
+                        
+                        appendLog("      OP\(op+1): DT1=\(dt1), MUL=\(mul), TL=\(tl)")
+                    }
+                }
             }
         }
         
-        // リズム音源の状態を確認
-        if 0x10 < cpu.opnaRegisters.count {
-            let rhythmReg = cpu.opnaRegisters[0x10]
-            appendLog("リズム音源レジスタ(0x10): \(String(format: "0x%02X", rhythmReg))")
+        // SSGレジスタ確認
+        appendLog("\n🎶 SSGレジスタ状態:")
+        
+        // ミキサーレジスタ
+        let mixerReg = cpu.opnaRegisters[0x07]
+        let toneA = (mixerReg & 0x01) == 0
+        let toneB = (mixerReg & 0x02) == 0
+        let toneC = (mixerReg & 0x04) == 0
+        let noiseA = (mixerReg & 0x08) == 0
+        let noiseB = (mixerReg & 0x10) == 0
+        let noiseC = (mixerReg & 0x20) == 0
+        
+        appendLog("  - ミキサー(0x07): 0x\(String(format: "%02X", mixerReg))")
+        appendLog("    トーン: A=\(toneA ? "有効" : "無効"), B=\(toneB ? "有効" : "無効"), C=\(toneC ? "有効" : "無効")")
+        appendLog("    ノイズ: A=\(noiseA ? "有効" : "無効"), B=\(noiseB ? "有効" : "無効"), C=\(noiseC ? "有効" : "無効")")
+        
+        // 各チャンネルの周波数と音量
+        // チャンネルA
+        let freqA = (UInt16(cpu.opnaRegisters[0x01]) << 8) | UInt16(cpu.opnaRegisters[0x00])
+        let volA = cpu.opnaRegisters[0x08] & 0x0F
+        appendLog("  - チャンネルA: 周波数=0x\(String(format: "%04X", freqA)), 音量=\(volA)")
+        
+        // チャンネルB
+        let freqB = (UInt16(cpu.opnaRegisters[0x03]) << 8) | UInt16(cpu.opnaRegisters[0x02])
+        let volB = cpu.opnaRegisters[0x09] & 0x0F
+        appendLog("  - チャンネルB: 周波数=0x\(String(format: "%04X", freqB)), 音量=\(volB)")
+        
+        // チャンネルC
+        let freqC = (UInt16(cpu.opnaRegisters[0x05]) << 8) | UInt16(cpu.opnaRegisters[0x04])
+        let volC = cpu.opnaRegisters[0x0A] & 0x0F
+        appendLog("  - チャンネルC: 周波数=0x\(String(format: "%04X", freqC)), 音量=\(volC)")
+        
+        // リズム音源の状態確認
+        appendLog("\n🥁 リズム音源状態:")
+        let rhythmFlags = cpu.opnaRegisters[0x10]
+        appendLog("  - リズムフラグ(0x10): 0x\(String(format: "%02X", rhythmFlags))")
+        
+        let bdOn = (rhythmFlags & 0x01) != 0
+        let sdOn = (rhythmFlags & 0x02) != 0
+        let tomOn = (rhythmFlags & 0x04) != 0
+        let cymOn = (rhythmFlags & 0x08) != 0
+        let hhOn = (rhythmFlags & 0x10) != 0
+        let rhythmOn = (rhythmFlags & 0x80) != 0
+        
+        appendLog("  - リズム有効: \(rhythmOn ? "有効" : "無効")")
+        appendLog("  - バスドラム: \(bdOn ? "オン" : "オフ"), スネア: \(sdOn ? "オン" : "オフ")")
+        appendLog("  - タム: \(tomOn ? "オン" : "オフ"), シンバル: \(cymOn ? "オン" : "オフ"), ハイハット: \(hhOn ? "オン" : "オフ")")
+    }
+    
+    // FM音源の音名を計算する関数
+    private func calculateNoteName(fnum: UInt16, block: UInt8) -> String {
+        // FNUMから音名を計算
+        if fnum == 0 { return "---" }
+        
+        // 音名の配列
+        let noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        
+        // FNUMの基準値を使用して音名を概算
+        // 各音のFNUM基準値（簡易計算用）
+        let fnumTable = [
+            /* C  */ 617,
+            /* C# */ 653,
+            /* D  */ 692,
+            /* D# */ 733,
+            /* E  */ 777,
+            /* F  */ 823,
+            /* F# */ 872,
+            /* G  */ 924,
+            /* G# */ 979,
+            /* A  */ 1037,
+            /* A# */ 1099,
+            /* B  */ 1164
+        ]
+        
+        // 最も近いFNUM値を探す
+        var closestNote = 0
+        var minDiff = Int.max
+        
+        for (i, baseFnum) in fnumTable.enumerated() {
+            let diff = abs(Int(fnum) - baseFnum)
+            if diff < minDiff {
+                minDiff = diff
+                closestNote = i
+            }
         }
+        
+        return "\(noteNames[closestNote])\(block)"
     }
     
     // PMD88のフック処理の状態を確認するメソッド
@@ -1075,28 +1212,85 @@ class PC88: ObservableObject {
         let fnum = UInt16(fnumHigh) << 8 | UInt16(fnumLow)
         let fnumHex = String(format: "0x%04X", fnum)
         
-        // 5. 音量 (offset 12, 1バイト)
+        // FNUMからBLOCKとFNUM値を分離
+        let block = (fnumHigh >> 3) & 0x07
+        let fnumValue = ((UInt16(fnumHigh) & 0x07) << 8) | UInt16(fnumLow)
+        
+        // FNUMから音名を計算
+        let noteName = calculateNoteName(fnum: fnumValue, block: block)
+        
+        // 5. 音色番号 (offset 7, 1バイト)
+        let instrument = Int(cpu.memory[fm1BaseAddress + 7])
+        
+        // 6. 音量 (offset 12, 1バイト)
         let volume = Int(cpu.memory[fm1BaseAddress + 12])
         
-        // 6. キーオンレジスタの状態を取得
+        // 7. キーオンレジスタの状態を取得
         let keyOnRegValue = cpu.opnaRegisters[0x28]
         
-        // 7. チャンネルのアクティブ状態を確認
-        let isActive = fm1Pos != 0 || currentValue != 0 || fnum != 0
+        // キーオンレジスタの詳細分析
+        let channelRaw = keyOnRegValue & 0x07
+        let isExtended = (keyOnRegValue & 0x08) != 0
+        let slotMask = (keyOnRegValue >> 4) & 0x0F
+        let keyOnChannel = isExtended ? channelRaw + 3 : channelRaw
         
-        // 8. チャンネルの状態変化を検出
-        let stateChanged = hasChanged || (previousFm1Fnum != fnum) || (previousFm1Volume != volume)
+        // スロットマスクの解析
+        var activeSlots = [Int]()
+        if (slotMask & 0x01) != 0 { activeSlots.append(1) }
+        if (slotMask & 0x02) != 0 { activeSlots.append(2) }
+        if (slotMask & 0x04) != 0 { activeSlots.append(3) }
+        if (slotMask & 0x08) != 0 { activeSlots.append(4) }
+        
+        // FM1チャンネルがキーオンされているか確認
+        let isFM1KeyOn = (keyOnChannel == 0) && !activeSlots.isEmpty
+        
+        // 8. チャンネルのアクティブ状態を確認
+        let isActive = fm1Pos != 0 || currentValue != 0 || fnum != 0 || isFM1KeyOn
+        
+        // 9. FM1チャンネルのオペレータパラメータを取得
+        var opParams = [(dt: Int, mul: Int, tl: Int, ar: Int, dr: Int, sr: Int, rr: Int)]()
+        
+        // 各オペレータのパラメータを取得
+        for op in 0...3 {
+            let dt_mul = Int(cpu.opnaRegisters[0x30 + op])
+            let tl = Int(cpu.opnaRegisters[0x40 + op])
+            let ks_ar = Int(cpu.opnaRegisters[0x50 + op])
+            let dr = Int(cpu.opnaRegisters[0x60 + op])
+            let sr = Int(cpu.opnaRegisters[0x70 + op])
+            let sl_rr = Int(cpu.opnaRegisters[0x80 + op])
+            
+            let dt = (dt_mul >> 4) & 0x07
+            let mul = dt_mul & 0x0F
+            let ar = ks_ar & 0x1F
+            let rr = sl_rr & 0x0F
+            
+            opParams.append((dt: dt, mul: mul, tl: tl, ar: ar, dr: dr, sr: sr, rr: rr))
+        }
+        
+        // 10. チャンネルの状態変化を検出
+        let stateChanged = hasChanged || (previousFm1Fnum != fnum) || (previousFm1Volume != volume) || (previousKeyOnRegValue != keyOnRegValue)
         
         // 状態が変化した場合は詳細ログを出力
         if stateChanged {
-            appendLog("🎹 FM1チャンネル状態変化: addr=\(hexValue), fnum=\(fnumHex), vol=\(volume), keyOn=\(String(format: "0x%02X", keyOnRegValue))")
+            appendLog("🎹 FM1チャンネル状態変化:")
+            appendLog("  - アドレス: \(hexValue), 音名: \(noteName), FNUM: \(fnumHex), 音量: \(volume)")
+            appendLog("  - キーオン: \(String(format: "0x%02X", keyOnRegValue)) (チャンネル\(keyOnChannel), スロット\(activeSlots.map { String($0) }.joined(separator: ",")))")
+            
+            // オペレータパラメータを詳細表示
+            if isActive {
+                appendLog("  - オペレータパラメータ:")
+                for (i, params) in opParams.enumerated() {
+                    appendLog("    OP\(i+1): DT=\(params.dt), MUL=\(params.mul), TL=\(params.tl), AR=\(params.ar), DR=\(params.dr), SR=\(params.sr), RR=\(params.rr)")
+                }
+            }
             
             // 状態を更新
             previousFm1Fnum = fnum
             previousFm1Volume = volume
+            previousKeyOnRegValue = keyOnRegValue
         }
         
-        // 9. メインワークエリアの曲データアドレスが変化したか確認
+        // 11. メインワークエリアの曲データアドレスが変化したか確認
         if songDataAddr != previousSongDataAddr {
             appendLog("🎵 PMD曲データアドレス変化: \(String(format: "0x%04X", previousSongDataAddr)) → \(String(format: "0x%04X", songDataAddr))")
             previousSongDataAddr = songDataAddr
@@ -1117,6 +1311,12 @@ class PC88: ObservableObject {
             self.fm1Position = String(format: "0x%04X", fm1Pos)
             self.keyOnRegisterValue = String(format: "0x%02X", keyOnRegValue)
             self.isChannelActive = isActive
+            self.fm1NoteName = noteName
+            self.fm1Instrument = instrument
+            
+            // キーオン状態の詳細情報
+            self.isFM1KeyOn = isFM1KeyOn
+            self.activeSlots = activeSlots.map { String($0) }.joined(separator: ", ")
         }
     }
     
