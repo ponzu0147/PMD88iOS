@@ -241,6 +241,13 @@ class AudioEngine {
         print("  スロット状態: \(slotStates[0])-\(slotStates[1])-\(slotStates[2])-\(slotStates[3])")
     }
     
+    // OPNAレジスタの更新をFMエンジンに反映
+    func updateFMRegisters(registers: [UInt8]) {
+        // レジスタの更新をFMエンジンに反映
+        fmEngine.updateState(registers: registers)
+        print("🎹 FMレジスタ更新完了")
+    }
+    
     // アクティブなFMチャンネルの詳細を出力
     private func printActiveFMChannelDetails() {
         guard let z80 = z80 else { return }

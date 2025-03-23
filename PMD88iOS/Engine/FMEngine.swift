@@ -21,6 +21,7 @@ class FMEngine {
         var output: Float = 0     // オペレータ出力値
         var phaseIncrement: Float = 0 // 位相増加量
         var lastOutput: Float = 0 // 前回の出力値
+        var frequency: Float = 0  // 周波数
         
         // エンベロープの状態
         enum EnvelopeState {
@@ -40,16 +41,17 @@ class FMEngine {
         var operators: [FMOperator] = Array(repeating: FMOperator(), count: 4)
         var algorithm: Int = 0     // 接続アルゴリズム (0-7)
         var feedback: Int = 0      // フィードバック量 (0-7)
-        var frequency: Int = 0     // 周波数設定値
+        var frequency: Float = 0    // 周波数設定値
         var block: Int = 0         // オクターブ (0-7)
         var keyOn: Bool = false    // キーオン状態
         var output: Float = 0      // チャンネル出力値
         var fnum: Int = 0          // F-Number値
         var pan: Int = 3           // パンニング (0=右, 1=左, 2=無し, 3=両方)
         var lastOutputs: [Float] = [0, 0] // 前回の出力値 [左, 右]
+        var noteNumber: Int = 0     // MIDIノート番号相当値 (0-127)
         
         // 音名とオクターブを計算
-        func noteName() -> String {
+        mutating func noteName() -> String {
             // PMD88の音名計算方法に基づいて実装
             // F-Numberから音名を計算
             if fnum == 0 {
@@ -75,8 +77,28 @@ class FMEngine {
                 }
             }
             
+            // MIDIノート番号を計算して保存 (C-1 = 0, G9 = 127)
+            // オクターブは0゙0として1゙1とする
+            self.noteNumber = closestIndex + (block + 1) * 12
+            
             // 音名とオクターブを組み合わせて返す
             return "\(noteNames[closestIndex])\(block)"  
+        }
+        
+        // 詳細なチャンネル情報を取得
+        mutating func getDetailedInfo() -> String {
+            let note = noteName()
+            let fnumHex = String(format: "%04X", fnum)
+            let algInfo = "ALG:\(algorithm) FB:\(feedback)"
+            let panInfo = ["R", "L", "-", "C"][pan]
+            
+            // オペレータのレベル情報を取得
+            var opLevels = ""
+            for (i, op) in operators.enumerated() {
+                opLevels += "OP\(i+1):\(String(format: "%02d", 127-op.totalLevel)) "
+            }
+            
+            return "\(note) F#:\(fnumHex) \(algInfo) PAN:\(panInfo) \(opLevels)"
         }
     }
     
@@ -129,12 +151,50 @@ class FMEngine {
     // デバッグ用カウンター
     private var debugCounter: Int = 0
     
+    // FMパラメータを直接設定するメソッド
+    func setFMParameters(channel: Int, fnum: Int, block: Int, algorithm: Int) {
+        guard channel < fmChannels.count else { return }
+        
+        // チャンネルパラメータを設定
+        fmChannels[channel].fnum = fnum
+        fmChannels[channel].block = block
+        fmChannels[channel].algorithm = algorithm
+        
+        // 周波数を計算
+        let frequency = calcFMFrequency(fnum, block)
+        fmChannels[channel].frequency = frequency
+        
+        // オペレータのパラメータを設定
+        for op in 0..<4 {
+            // 各オペレータの周波数を設定
+            fmChannels[channel].operators[op].frequency = frequency
+            
+            // アタックを速くして音が確実に出るようにする
+            fmChannels[channel].operators[op].attackRate = 31
+            fmChannels[channel].operators[op].decayRate = 0
+            fmChannels[channel].operators[op].sustainRate = 0
+            fmChannels[channel].operators[op].releaseRate = 15
+            
+            // オペレータの音量を設定 (最後のオペレータのみ音量を上げる)
+            if op == 3 {
+                fmChannels[channel].operators[op].totalLevel = 32 // 音量を上げる
+            } else {
+                fmChannels[channel].operators[op].totalLevel = 127 // 他は最小音量
+            }
+        }
+        
+        print("🎹 FM\(channel+1)のパラメータを設定: FNUM=\(fnum), BLOCK=\(block), ALG=\(algorithm), 音名=\(calcNoteName(fnum: fnum, block: block))")
+    }
+    
     // FM音源のサンプル生成
     func generateSample(_ timeStep: Float) -> Float {
         fmChannelsLock.lock()
         defer { fmChannelsLock.unlock() }
         
         var mixedOutput: Float = 0.0
+        
+        // 後で記録するためにローカル変数に保存
+        var _: Float = 0.0
         var activeChannels = 0
         
         // 各FMチャンネルの処理
@@ -155,7 +215,7 @@ class FMEngine {
             activeChannels += 1
             
             // チャンネルの基本周波数を計算
-            let baseFreq = calcFMFrequency(fmChannels[ch].frequency, fmChannels[ch].block)
+            let baseFreq = calcFMFrequency(Int(fmChannels[ch].fnum), fmChannels[ch].block)
             
             // オペレータの出力を計算
             var opOutputs: [Float] = [0, 0, 0, 0]
@@ -303,17 +363,41 @@ class FMEngine {
                 }
             }
             
-            // ミキシング
-            mixedOutput += fmChannels[ch].output * 0.25 // チャンネル音量調整
+            // ミキシング - 音量を増やす
+            mixedOutput += fmChannels[ch].output * 0.5 // チャンネル音量を増大
             fmChannels[ch].output = 0.0 // 次回のために初期化
         }
         
-        // デバッグ用：アクティブなチャンネル数を定期的に出力
+        // サンプル値を記録
+        // 直近のサンプルを配列に保存
+        if sampleIndex >= lastSamples.count {
+            sampleIndex = 0
+        }
+        
+        // 音が出ていない場合はテスト音を生成
+        if activeChannels > 0 && abs(mixedOutput) < 0.01 {
+            // キーオンしているのに音が出ていない場合は強制的に音を生成
+            let testTone = sin(Float(sampleIndex % 100) / 100.0 * 2.0 * Float.pi) * 0.1
+            mixedOutput = testTone
+            print("⚠️ FMチャンネルがアクティブなのに音が出ていないためテスト音を生成")
+        }
+        
+        lastSamples[sampleIndex] = mixedOutput
+        sampleIndex += 1
+        
+        // デバッグ用：アクティブなチャンネル数と音量を定期的に出力
         debugCounter += 1
-        if debugCounter >= 44100 { // 約1秒ごとに出力
+        if debugCounter >= 22050 { // 約0.5秒ごとに出力
             debugCounter = 0
             if activeChannels > 0 {
-                print("🎹 アクティブFMチャンネル数: \(activeChannels)")
+                print("🎹 アクティブFMチャンネル数: \(activeChannels), 最大音量: \(lastSamples.max() ?? 0)")
+                
+                // チャンネルの状態を詳細に出力
+                for ch in 0..<fmChannels.count {
+                    if fmChannels[ch].keyOn {
+                        print("  - FM\(ch+1): 音名=\(calcNoteName(fnum: fmChannels[ch].fnum, block: fmChannels[ch].block)), キーオン=\(fmChannels[ch].keyOn), アルゴリズム=\(fmChannels[ch].algorithm)")
+                    }
+                }
             }
         }
         
@@ -326,6 +410,27 @@ class FMEngine {
         let safeBlock = max(1, block) // ブロックが1未満の場合は1にする
         let baseFreq = fmClock / (Float(144) * (2.0 * 1024.0)) // FM音源の基準周波数
         return baseFreq * f * powf(2.0, Float(safeBlock - 1))
+    }
+    
+    // FM音源の音名計算
+    private func calcNoteName(fnum: Int, block: Int) -> String {
+        if fnum == 0 {
+            return "---"
+        }
+        
+        // 音名の配列（C, C#, D, D#, E, F, F#, G, G#, A, A#, B）
+        let noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        
+        // FNUMから音名のインデックスを計算
+        // 基準値: FNUM=617でA4（40Hz）、Block=4
+        let fnumLog = log(Double(fnum) / 617.0) / log(2.0)
+        let noteIndex = Int((fnumLog * 12.0).rounded())
+        
+        // 音名とオクターブを組み合わせる
+        let adjustedIndex = (noteIndex % 12 + 12) % 12  // 負の値に対応
+        let adjustedOctave = block + (noteIndex / 12)
+        
+        return "\(noteNames[adjustedIndex])\(adjustedOctave)"
     }
     
     // デチューン値から倍率を計算
@@ -660,7 +765,7 @@ class FMEngine {
                     fmChannels[ch].block = newBlock
                     
                     // 周波数計算
-                    fmChannels[ch].frequency = fmChannels[ch].fnum
+                    fmChannels[ch].frequency = Float(fmChannels[ch].fnum)
                     
                     // ブロック値が適切な範囲にあることを確認
                     if fmChannels[ch].block <= 0 {
@@ -743,6 +848,41 @@ class FMEngine {
         
         // 音名を計算して返す
         return fmChannels[channel].noteName()
+    }
+    
+    // 直近のサンプル値を取得するメソッド
+    private var lastSamples: [Float] = Array(repeating: 0.0, count: 100)
+    private var sampleIndex: Int = 0
+    
+    // 指定した数のサンプル値を取得
+    func getLastSamples(count: Int) -> [Float] {
+        let sampleCount = min(count, lastSamples.count)
+        return Array(lastSamples.suffix(sampleCount))
+    }
+    
+    // キーオン処理
+    func keyOn(channel: Int, slots: UInt8) {
+        guard channel >= 0 && channel < fmChannels.count else { return }
+        
+        fmChannelsLock.lock()
+        defer { fmChannelsLock.unlock() }
+        
+        fmChannels[channel].keyOn = true
+        
+        // 各オペレータのキーオン処理
+        for op in 0..<4 {
+            // スロットマスクを確認
+            let slotMask = UInt8(1 << op)
+            let isSlotOn = (slots & slotMask) != 0
+            
+            if isSlotOn {
+                fmChannels[channel].operators[op].keyOn = true
+                fmChannels[channel].operators[op].envelopeState = .attack
+                fmChannels[channel].operators[op].keyOnTime = CACurrentMediaTime()
+            }
+        }
+        
+        print("🎹 チャンネル\(channel)のキーオン設定: スロット=0x\(String(format: "%02X", slots))")
     }
     
     // PMD88のワークエリアの解析結果を出力

@@ -78,6 +78,11 @@ public class Z80 {
     var regAddrPort44: UInt8 = 0
     var regAddrPort46: UInt8 = 0
     var addrWritten: [UInt8: Bool] = [0x44: false, 0x46: false]
+    var selectedOPNARegister: UInt8 = 0 // 選択中のOPNAレジスタ
+    
+    // ポート入出力ハンドラ
+    var portInHandler: ((UInt16) -> UInt8)? = nil
+    var portOutHandler: ((UInt16, UInt8) -> Void)? = nil
     
     // デバッグ関連
     var debugLog: [String] = []

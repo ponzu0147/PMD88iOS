@@ -22,8 +22,8 @@ import AVFoundation
 
 @main
 struct PMD88iOSApp: App {
-    // PC88インスタンスをアプリ全体で共有
-    @StateObject private var pc88 = PC88()
+    // PC88Coreインスタンスをアプリ全体で共有
+    @StateObject private var pc88 = PC88Core()
     
     // アプリ起動時の初期化処理
     init() {
