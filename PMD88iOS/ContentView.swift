@@ -70,9 +70,9 @@ struct ControlPanelView: View {
             Button(action: onPlayPause) {
                 Text(buttonText)
                     .frame(minWidth: 100)
-                    .padding()
+                .padding()
                     .background(isD88DataAvailable ? buttonColor : Color.gray)
-                    .foregroundColor(.white)
+                .foregroundColor(.white)
                     .cornerRadius(8)
             }
             .disabled(!isD88DataAvailable) // D88データが取得されるまで非活性化
@@ -369,7 +369,7 @@ struct ContentView: View {
     let inactiveColor = Color.gray
     
     var body: some View {
-        ScrollView {
+            ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 // ヘッダー部分
                 HeaderView(status: pc88.status)

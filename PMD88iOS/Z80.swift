@@ -248,19 +248,19 @@ public class Z80 {
             }
             
             // Z80Instructions.swiftに定義されているstep関数を実行
-            lock.lock()
-            defer { lock.unlock() }
-            
-            if pc == breakPoint {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        if pc == breakPoint {
                 addDebugLog("ブレークポイント到達: \(String(format: "0x%04X", pc))")
                 return -1  // ブレークポイントに達した
-            }
-            
-            // ループ検出
+        }
+        
+        // ループ検出
             startPC = pc
             lastPCs.append(pc)
-            if lastPCs.count > 100 {
-                lastPCs.removeFirst()
+        if lastPCs.count > 100 {
+            lastPCs.removeFirst()
             }
             
             // 無限ループ検出（同じPCが短時間に多数回出現）
@@ -383,4 +383,4 @@ public class Z80 {
     public func setPortMapping(forBoard boardType: String) {
         core.setPortMapping(forBoard: boardType)
     }
-}
+} 
