@@ -190,9 +190,6 @@ extension Z80 {
         // f = 1.79MHz / (32 * toneValue)
         // 音名は周波数から計算
         
-        // 音名の配列
-        let noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-        
         // 各音名の基準トーン値（近似値）
         // C4（ミドルC）を基準にしている
         let baseToneValues = [

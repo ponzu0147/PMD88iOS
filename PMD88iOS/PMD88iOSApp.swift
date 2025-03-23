@@ -22,6 +22,9 @@ import AVFoundation
 
 @main
 struct PMD88iOSApp: App {
+    // PC88インスタンスをアプリ全体で共有
+    @StateObject private var pc88 = PC88()
+    
     // アプリ起動時の初期化処理
     init() {
         // オーディオセッションの初期設定
@@ -54,6 +57,7 @@ struct PMD88iOSApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(pc88)
         }
     }
 }

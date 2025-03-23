@@ -432,7 +432,7 @@ class AudioEngine {
                     print("🎵 オーディオバッファ生成成功: \(buffer.frameLength)フレーム")
                     
                     // バッファをスケジュール
-                    player.scheduleBuffer(buffer, at: nil, options: .loops) { [weak self] in
+                    player.scheduleBuffer(buffer, at: nil, options: .loops) {
                         print("🎵 バッファ再生完了コールバック")
                         // 必要に応じて追加のバッファをスケジュール
                     }

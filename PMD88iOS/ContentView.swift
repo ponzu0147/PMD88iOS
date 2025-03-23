@@ -1,342 +1,358 @@
+//
+//  ContentView.swift
+//  PMD88iOS
+//
+//  Created on 2022/01/04.
+//
+
 import SwiftUI
-import AVFoundation
+import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @StateObject var pc88 = PC88()
-    // PMD88音楽再生ボタンのみ使用
+    @EnvironmentObject var pc88: PC88
     @State private var isPMDPlaying = false
+    @State private var selectedFile: URL?
+    @State private var isFilePickerPresented = false
+    @State private var refreshTimer: Timer?
+    
+    // チャンネル状態表示用の色
+    let activeColor = Color.green
+    let inactiveColor = Color.gray
     
     var body: some View {
-        VStack {
-            Text("PC-8801 PMD88 音楽エミュレータ")
-                .font(.title)
-                .padding()
-            
-            // ステータス表示
-            Text(pc88.status)
-                .font(.headline)
-                .padding()
-            
-            // PMD88音楽再生用ボタン（メインボタン）
-            Button(action: {
-                isPMDPlaying.toggle()
-                if isPMDPlaying {
-                    pc88.runPMDMusic()
-                } else {
-                    pc88.stop()
-                }
-            }) {
-                HStack {
-                    Image(systemName: isPMDPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 24))
-                    Text(isPMDPlaying ? "PMD88停止" : "PMD88音楽再生")
-                        .font(.headline)
-                }
-                .padding()
-                .frame(minWidth: 220, minHeight: 50)
-                .background(isPMDPlaying ? Color.red : Color.green)
-                .foregroundColor(.white)
-                .cornerRadius(10)
-            }
-            .padding()
-            .disabled(!pc88.runButtonEnabled && isPMDPlaying)
-            
-            // PMD88音楽再生ボタンのみ表示
-            
-            // チャンネル情報表示エリア
-            VStack(spacing: 8) {
-                Text("チャンネル状態")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                // ヘッダー部分
+                Text("PMD88 Music Player")
+                    .font(.title)
+                    .padding(.bottom, 8)
+                
+                // ステータス表示
+                Text("ステータス: \(pc88.status)")
                     .font(.headline)
-                    .padding(.top, 4)
+                    .padding(.bottom, 8)
                 
-                // FM音源チャンネル表示
-                VStack(spacing: 2) {
-                    Text("FM音源")
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 8)
-                        .background(Color.blue.opacity(0.2))
+                // コントロールボタン
+                HStack(spacing: 20) {
+                    // PMD88音楽再生/停止ボタン
+                    Button(action: {
+                        if !isPMDPlaying {
+                            // 再生開始
+                            isPMDPlaying = true
+                            
+                            // バックグラウンドで実行
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                self.pc88.runPMDMusic()
+                            }
+                            
+                            // 情報更新タイマー開始
+                            startRefreshTimer()
+                        } else {
+                            // 停止
+                            isPMDPlaying = false
+                            
+                            // バックグラウンドで停止処理
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                self.pc88.stop()
+                            }
+                            
+                            // 更新タイマーを停止
+                            stopRefreshTimer()
+                        }
+                    }) {
+                        Text(isPMDPlaying ? "停止" : "再生")
+                            .frame(minWidth: 100)
+                            .padding()
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                    }
+                    // ボタンの無効化条件を修正
+                    .disabled(false) // 常に有効にする
                     
-                    // FMチャンネル情報のグリッド表示
-                    LazyVGrid(columns: [
-                        GridItem(.flexible()),
-                        GridItem(.flexible()),
-                        GridItem(.flexible())
-                    ], spacing: 4) {
-                        ForEach(pc88.fmChannels) { channel in
-                            ChannelInfoView(channel: channel)
+                    // ファイル選択ボタン
+                    Button(action: {
+                        isFilePickerPresented = true
+                    }) {
+                        Text("D88ファイル選択")
+                            .frame(minWidth: 100)
+                            .padding()
+                            .background(Color.orange)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                    }
+                    .disabled(isPMDPlaying)
+                    
+                    // 選択ファイル名表示
+                    if let selectedFile = selectedFile {
+                        Text(selectedFile.lastPathComponent)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .padding(.bottom, 16)
+                
+                // FM音源チャンネル情報表示
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("FM音源チャンネル")
+                        .font(.headline)
+                        .padding(.bottom, 4)
+                    
+                    // FMチャンネルの状態表示
+                    ForEach(0..<6) { i in
+                        if let info = pc88.fmChannelInfo[i] {
+                            HStack {
+                                Text("FM\(i+1):")
+                                    .frame(width: 50, alignment: .leading)
+                                
+                                Circle()
+                                    .fill(info.isActive ? activeColor : inactiveColor)
+                                    .frame(width: 12, height: 12)
+                                
+                                Text("アドレス: \(String(format:"0x%04X", info.playingAddress))")
+                                    .frame(width: 120, alignment: .leading)
+                                
+                                Text("音色: \(info.toneNumber)")
+                                    .frame(width: 80, alignment: .leading)
+                                
+                                Text("音量: \(info.volume)")
+                                    .frame(width: 80, alignment: .leading)
+                            }
+                            .padding(.vertical, 2)
+                        } else {
+                            HStack {
+                                Text("FM\(i+1):")
+                                    .frame(width: 50, alignment: .leading)
+                                
+                                Circle()
+                                    .fill(inactiveColor)
+                                    .frame(width: 12, height: 12)
+                                
+                                Text("停止中")
+                            }
+                            .padding(.vertical, 2)
                         }
                     }
                 }
-                .padding(4)
-                .background(Color.blue.opacity(0.1))
-                .cornerRadius(8)
+                .padding(.bottom, 16)
                 
-                // SSG音源チャンネル表示
-                VStack(spacing: 2) {
-                    Text("SSG音源")
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 8)
-                        .background(Color.green.opacity(0.2))
+                // SSG音源チャンネル情報表示
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("SSG音源チャンネル")
+                        .font(.headline)
+                        .padding(.bottom, 4)
                     
-                    // SSGチャンネル情報のグリッド表示
-                    LazyVGrid(columns: [
-                        GridItem(.flexible()),
-                        GridItem(.flexible()),
-                        GridItem(.flexible())
-                    ], spacing: 4) {
-                        ForEach(pc88.ssgChannels) { channel in
-                            ChannelInfoView(channel: channel)
+                    // SSGチャンネルの状態表示
+                    ForEach(0..<3) { i in
+                        if let info = pc88.ssgChannelInfo[i] {
+                            HStack {
+                                Text("SSG\(i+1):")
+                                    .frame(width: 50, alignment: .leading)
+                                
+                                Circle()
+                                    .fill(info.isActive ? activeColor : inactiveColor)
+                                    .frame(width: 12, height: 12)
+                                
+                                Text("アドレス: \(String(format:"0x%04X", info.playingAddress))")
+                                    .frame(width: 120, alignment: .leading)
+                                
+                                Text("音色: \(info.toneNumber)")
+                                    .frame(width: 80, alignment: .leading)
+                                
+                                Text("音量: \(info.volume)")
+                                    .frame(width: 80, alignment: .leading)
+                            }
+                            .padding(.vertical, 2)
+                        } else {
+                            HStack {
+                                Text("SSG\(i+1):")
+                                    .frame(width: 50, alignment: .leading)
+                                
+                                Circle()
+                                    .fill(inactiveColor)
+                                    .frame(width: 12, height: 12)
+                                
+                                Text("停止中")
+                            }
+                            .padding(.vertical, 2)
                         }
                     }
                 }
-                .padding(4)
-                .background(Color.green.opacity(0.1))
-                .cornerRadius(8)
+                .padding(.bottom, 16)
                 
-                // リズム音源チャンネル表示
-                VStack(spacing: 2) {
-                    Text("リズム音源")
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 8)
-                        .background(Color.orange.opacity(0.2))
+                // リズム音源とADPCM状態表示
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("リズム・ADPCM音源")
+                        .font(.headline)
+                        .padding(.bottom, 4)
                     
-                    // リズムチャンネル情報のグリッド表示
-                    LazyVGrid(columns: [
-                        GridItem(.flexible()),
-                        GridItem(.flexible()),
-                        GridItem(.flexible())
-                    ], spacing: 4) {
-                        ForEach(pc88.rhythmChannels) { channel in
-                            ChannelInfoView(channel: channel)
-                        }
-                    }
-                }
-                .padding(4)
-                .background(Color.orange.opacity(0.1))
-                .cornerRadius(8)
-                
-                // ADPCM音源チャンネル表示
-                if let adpcmChannel = pc88.adpcmChannel {
-                    VStack(spacing: 2) {
-                        Text("ADPCM音源")
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                            .background(Color.purple.opacity(0.2))
+                    HStack {
+                        Text("リズム:")
+                            .frame(width: 50, alignment: .leading)
                         
-                        ChannelInfoView(channel: adpcmChannel)
-                            .padding(.horizontal)
+                        Circle()
+                            .fill(pc88.isRhythmActive ? activeColor : inactiveColor)
+                            .frame(width: 12, height: 12)
+                        
+                        Text(pc88.isRhythmActive ? "演奏中" : "停止中")
                     }
-                    .padding(4)
-                    .background(Color.purple.opacity(0.1))
-                    .cornerRadius(8)
+                    .padding(.vertical, 2)
+                    
+                    HStack {
+                        Text("ADPCM:")
+                            .frame(width: 50, alignment: .leading)
+                        
+                        Circle()
+                            .fill(pc88.isADPCMActive ? activeColor : inactiveColor)
+                            .frame(width: 12, height: 12)
+                        
+                        Text(pc88.isADPCMActive ? "演奏中" : "停止中")
+                    }
+                    .padding(.vertical, 2)
                 }
+                .padding(.bottom, 16)
                 
                 // PMD88ワークエリアモニター
-                VStack(spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("PMD88ワークエリアモニター")
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 8)
-                        .background(Color.teal.opacity(0.2))
+                        .font(.headline)
+                        .padding(.bottom, 4)
                     
-                    VStack(alignment: .leading, spacing: 6) {
-                        // メインワークエリア情報
-                        Group {
-                            HStack {
-                                Text("曲データ (0x1000):")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .frame(width: 120, alignment: .leading)
-                                Text(pc88.songDataAddress)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .padding(4)
-                                    .background(Color.black.opacity(0.05))
-                                    .cornerRadius(4)
-                            }
-                            
-                            HStack {
-                                Text("FM1位置 (0x1020):")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .frame(width: 120, alignment: .leading)
-                                Text(pc88.fm1Position)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .padding(4)
-                                    .background(Color.black.opacity(0.05))
-                                    .cornerRadius(4)
-                            }
-                            
-                            HStack {
-                                Text("キーオン (0x28):")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .frame(width: 120, alignment: .leading)
-                                Text(pc88.keyOnRegisterValue)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .padding(4)
-                                    .background(Color.black.opacity(0.05))
-                                    .cornerRadius(4)
-                                Circle()
-                                    .fill(pc88.isChannelActive ? Color.green : Color.red)
-                                    .frame(width: 8, height: 8)
-                            }
-                        }
-                        
-                        Divider()
-                            .padding(.vertical, 4)
-                        
-                        // FM1チャンネルワークエリア情報
-                        Group {
-                            Text("FM1チャンネルワークエリア (0xBD61付近)")
-                                .font(.system(size: 12, weight: .bold))
-                                .padding(.bottom, 2)
-                            
-                            // 演奏中のアドレス
-                            HStack {
-                                Text("address (0xBD61):")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .frame(width: 120, alignment: .leading)
-                                Text(pc88.fm1AddressHexValue)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .padding(4)
-                                    .background(Color.black.opacity(0.05))
-                                    .cornerRadius(4)
-                                Circle()
-                                    .fill(pc88.fm1AddressChanged ? Color.green : Color.red)
-                                    .frame(width: 8, height: 8)
-                            }
-                            
-                            // 演奏終了時の戻り先
-                            HStack {
-                                Text("partloop (0xBD63):")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .frame(width: 120, alignment: .leading)
-                                Text(pc88.fm1PartLoop)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .padding(4)
-                                    .background(Color.black.opacity(0.05))
-                                    .cornerRadius(4)
-                            }
-                            
-                            // 残りの長さ
-                            HStack {
-                                Text("leng (0xBD65):")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .frame(width: 120, alignment: .leading)
-                                Text("\(pc88.fm1Length)")
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .padding(4)
-                                    .background(Color.black.opacity(0.05))
-                                    .cornerRadius(4)
-                            }
-                            
-                            // BLOCK/FNUM値
-                            HStack {
-                                Text("fnum (0xBD66):")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .frame(width: 120, alignment: .leading)
-                                Text(pc88.fm1FnumValue)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .padding(4)
-                                    .background(Color.black.opacity(0.05))
-                                    .cornerRadius(4)
-                            }
-                            
-                            // 音量
-                            HStack {
-                                Text("volume (0xBD6D):")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .frame(width: 120, alignment: .leading)
-                                Text("\(pc88.fm1Volume)")
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .padding(4)
-                                    .background(Color.black.opacity(0.05))
-                                    .cornerRadius(4)
-                            }
-                        }
-                        
-                        // 説明
-                        Text("※ 値が変化するとエミュレーションが正しく動作している証拠です")
-                            .font(.system(size: 10))
-                            .foregroundColor(.gray)
-                            .padding(.top, 4)
+                    // モニター表示
+                    HStack {
+                        Text("曲データアドレス:")
+                            .frame(width: 120, alignment: .leading)
+                        Text(pc88.songDataAddress)
                     }
-                    .padding(.horizontal)
+                    .padding(.vertical, 2)
+                    
+                    HStack {
+                        Text("処理ステップ数:")
+                            .frame(width: 120, alignment: .leading)
+                        Text("\(pc88.stepCount)")
+                    }
+                    .padding(.vertical, 2)
                 }
-                .padding(4)
-                .background(Color.teal.opacity(0.1))
-                .cornerRadius(8)
             }
-            .background(Color(white: 0.95))
-            .cornerRadius(8)
             .padding()
         }
-        .padding()
-        .onAppear {
-            // ビュー表示時にエミュレータを初期化
-            initializeEmulator()
+        .sheet(isPresented: $isFilePickerPresented) {
+            DocumentPicker(selectedURL: $selectedFile, onPick: { url in
+                // ファイルを選択したら読み込む
+                loadD88File(url: url)
+            })
         }
-        .onChange(of: pc88.programRunning) { oldValue, newValue in
-            // プログラム実行状態の変化を監視
+        .onAppear {
+            // PC88の状態を監視して同期
+            isPMDPlaying = pc88.programRunning
+        }
+        .onReceive(pc88.$programRunning) { newValue in
+            // PC88の状態変化を監視して同期
             isPMDPlaying = newValue
         }
+        .onDisappear {
+            // ビューが非表示になったらタイマーを停止
+            stopRefreshTimer()
+        }
     }
     
-    private func initializeEmulator() {
-        // ダミーのD88を作成してロード（初期化）
-        let dummyData = Data(repeating: 0, count: 1024)
-        let disk = D88Disk(from: dummyData)
-        pc88.loadD88(disk)
+    // ファイル読み込み処理
+    private func loadD88File(url: URL) {
+        // 引数で受け取ったURLを使用する
+        // ファイル読み込み処理（バックグラウンドで実行）
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                // セキュリティスコープドアクセスの開始
+                let securityScopedURL = url.startAccessingSecurityScopedResource()
+                
+                // ファイルデータの読み込み
+                let data = try Data(contentsOf: url)
+                
+                // セキュリティスコープドアクセスの終了
+                if securityScopedURL {
+                    url.stopAccessingSecurityScopedResource()
+                }
+                
+                // メインスレッドでPC88のプロパティを更新
+                DispatchQueue.main.async {
+                    self.pc88.status = "D88ファイルを読み込みました: \(url.lastPathComponent)"
+                    self.pc88.d88Data = data
+                }
+            } catch {
+                // エラーが発生した場合
+                DispatchQueue.main.async {
+                    self.pc88.status = "エラー: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    // 更新タイマーの開始
+    private func startRefreshTimer() {
+        // 既存のタイマーを停止
+        stopRefreshTimer()
         
-        // チャンネル情報を定期的に更新するタイマーを設定
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            if self.pc88.programRunning {
-                self.pc88.updateChannelInfo()
-            }
+        // 新しいタイマーを開始（0.2秒ごとに更新）
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+            // チャンネル情報を更新（メインスレッドで実行）
+            self.pc88.updateChannelInfo()
         }
     }
-}
-
-// チャンネル情報表示用のサブビュー
-struct ChannelInfoView: View {
-    let channel: PC88.ChannelInfo
     
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            // チャンネル名と演奏状態
-            HStack {
-                Text("\(channel.type)\(channel.number)")
-                    .font(.system(size: 12, weight: .bold))
-                Circle()
-                    .fill(channel.isPlaying ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
-            }
-            
-            // 音名
-            Text("音名: \(channel.note)")
-                .font(.system(size: 10))
-            
-            // アドレス
-            Text("Addr: \(String(format: "0x%04X", channel.address))")
-                .font(.system(size: 10, design: .monospaced))
-            
-            // 音量とインストゥルメント
-            HStack {
-                Text("Vol: \(channel.volume)")
-                    .font(.system(size: 10))
-                Text("Inst: \(channel.instrument)")
-                    .font(.system(size: 10))
-            }
-        }
-        .padding(4)
-        .background(channel.isPlaying ? Color.white : Color(white: 0.9))
-        .cornerRadius(4)
+    // 更新タイマーの停止
+    private func stopRefreshTimer() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
     }
 }
 
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        ContentView()
+// ファイル選択のDocumentPicker
+struct DocumentPicker: UIViewControllerRepresentable {
+    @Binding var selectedURL: URL?
+    var onPick: (URL) -> Void
+    
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        // D88ファイルとすべてのデータファイルを対象にする
+        var supportedTypes: [UTType] = [UTType.data]
+        // カスタムUTTypeの定義（D88ファイル用）
+        if let d88Type = UTType(filenameExtension: "d88") {
+            supportedTypes.append(d88Type)
+        }
+        
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: supportedTypes)
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let parent: DocumentPicker
+        
+        init(_ parent: DocumentPicker) {
+            self.parent = parent
+        }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            
+            // セキュリティスコープドアクセスの開始
+            let securityScopedURL = url.startAccessingSecurityScopedResource()
+            
+            // 選択されたURLを保存して処理を実行
+            parent.selectedURL = url
+            parent.onPick(url)
+            
+            // セキュリティスコープドアクセスの終了
+            if securityScopedURL {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
     }
 }
