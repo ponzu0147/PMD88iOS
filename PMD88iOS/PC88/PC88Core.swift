@@ -32,6 +32,12 @@ class PC88Core: ObservableObject {
     var musicData: [UInt8]?   // PMD88曲データ
     var toneData: [UInt8]?    // PMD88音色データ
     
+    // IPL関連
+    @Published var iplLoaded: Bool = false
+    @Published var osBooted: Bool = false
+    var iplCode: [UInt8]? // IPLコード
+    var osData: [UInt8]?  // OSデータ
+    
     // Z80 CPU
     @Published var cpu = Z80()
     
@@ -431,6 +437,11 @@ class PC88Core: ObservableObject {
         
         // リセット処理
         resetSystem()
+        
+        // IPLからOSをブートする（自動ブートオプション）
+        if iplLoaded {
+            bootFromIPL()
+        }
     }
     
     // MARK: - システムリセット
@@ -443,19 +454,358 @@ class PC88Core: ObservableObject {
         // Z80 CPUをリセット
         cpu.reset()
         
+        // メモリマップの初期化
+        setupMemoryMap()
+        
+        // IPLが利用可能ならロード
+        if let d88Data = d88Data {
+            loadIPL(from: d88Data)
+        }
+        
         // PMD2Gを再ロード
         loadPMD2G()
         
         // オーディオエンジンをリセット
         audio.stopAudio()
         
+        // 状態をリセット
+        iplLoaded = iplCode != nil
+        osBooted = false
+        
         debug.appendLog("システムをリセットしました")
+    }
+    
+    // MARK: - IPL関連
+    
+    // メモリマップの設定
+    private func setupMemoryMap() {
+        // メモリ領域の初期化
+        // PC-88のメモリマップに合わせて設定
+        // 0x0000-0x7FFF: システム領域（ROM/RAM）
+        // 0x8000-0xFFFF: ユーザー領域（RAM）
+        
+        // メモリ全体をクリア
+        for i in 0..<cpu.memory.count {
+            cpu.memory[i] = 0
+        }
+        
+        debug.appendLog("メモリマップを初期化しました")
+    }
+    
+    // IPLコードのロード
+    func loadIPL(from d88Data: Data) {
+        let rawBytes = [UInt8](d88Data)
+        
+        // D88フォーマットからIPLセクタを抽出
+        if rawBytes.count >= 0x2B0 + 0x100 {
+            // トラック0、セクタ1のデータ（IPLコード）を抽出
+            // D88ヘッダー（0x20バイト）+ トラックヘッダー（0x10バイト）+ セクタヘッダー（0x10バイト）= 0x40バイト
+            // 実際のIPLコードは0x2B0付近から始まる
+            
+            let iplOffset = 0x2B0  // IPLコードの開始位置（D88フォーマット依存）
+            let iplSize = 0x100    // IPLコードのサイズ（通常は256バイト）
+            
+            if iplOffset + iplSize <= rawBytes.count {
+                iplCode = Array(rawBytes[iplOffset..<(iplOffset + iplSize)])
+                
+                // IPLコードの解析（最初の数バイトを表示）
+                var iplDisassembly = "IPLコード解析:\n"
+                if iplCode!.count >= 3 && iplCode![0] == 0xF3 {
+                    iplDisassembly += "0000: F3       - DI（割り込み禁止）\n"
+                }
+                if iplCode!.count >= 6 && iplCode![1] == 0x3A && iplCode![2] == 0x02 && iplCode![3] == 0x00 {
+                    iplDisassembly += "0001: 3A 02 00 - LD A,(0002H)（機種情報の読み込み）\n"
+                }
+                if iplCode!.count >= 8 && iplCode![4] == 0xFE && iplCode![5] == 0xA0 {
+                    iplDisassembly += "0004: FE A0    - CP A0H（PC-8801との比較）\n"
+                }
+                debug.appendLog(iplDisassembly)
+                
+                // IPLコードをメモリにロード（アドレス0x0000から）
+                for (i, byte) in iplCode!.enumerated() {
+                    if i < cpu.memory.count {
+                        cpu.memory[i] = byte
+                    }
+                }
+                
+                iplLoaded = true
+                debug.appendLog("IPLコードをロードしました: \(iplSize)バイト")
+                
+                // 機種情報をメモリに設定（PC-8801用）
+                cpu.memory[0x0002] = 0xA0  // PC-8801識別子
+                
+                // PCを0x0000に設定（IPLの開始アドレス）
+                cpu.pc = 0x0000
+                
+                // OS領域の初期化（0x100から）
+                let osStartAddr = 0x100
+                for i in 0..<0x1000 { // 4KBのOS領域をクリア
+                    if osStartAddr + i < cpu.memory.count {
+                        cpu.memory[osStartAddr + i] = 0
+                    }
+                }
+                
+                // ディスクパラメータブロック（DPB）の設定
+                // 0x120-0x12Fにディスク情報を設定
+                let dpbAddr = 0x120
+                cpu.memory[dpbAddr] = 26     // セクタあたりのレコード数
+                cpu.memory[dpbAddr + 1] = 3   // ブロックシフト係数
+                cpu.memory[dpbAddr + 2] = 7   // ブロックマスク
+                cpu.memory[dpbAddr + 3] = 0   // エクステント
+                cpu.memory[dpbAddr + 4] = 242 // ディスクサイズ（ブロック数-1）の下位バイト
+                cpu.memory[dpbAddr + 5] = 0   // ディスクサイズ（ブロック数-1）の上位バイト
+                cpu.memory[dpbAddr + 6] = 63  // ディレクトリサイズ-1
+                cpu.memory[dpbAddr + 7] = 0   // ディレクトリ割り当てビットマップ1
+                cpu.memory[dpbAddr + 8] = 0   // ディレクトリ割り当てビットマップ2
+                cpu.memory[dpbAddr + 9] = 0   // チェックベクタサイズ
+                cpu.memory[dpbAddr + 10] = 2  // 予約トラック数
+            } else {
+                debug.appendLog("❗ IPLコードの抽出に失敗しました: データサイズ不足")
+                iplLoaded = false
+            }
+        } else {
+            debug.appendLog("❗ D88データからIPLコードを抽出できません: データサイズ不足")
+            iplLoaded = false
+        }
+    }
+    
+    // IPLからOSをブート
+    func bootFromIPL() {
+        if !iplLoaded {
+            debug.appendLog("❗ IPLがロードされていないためブートできません")
+            return
+        }
+        
+        debug.appendLog("IPLからOSをブートします...")
+        
+        // BIOSフックを設定
+        setupBIOSHooks()
+        
+        // Z80 CPUの実行を開始
+        // IPLコードが実行され、ディスクからOSがロードされる
+        cpu.pc = 0x0000  // IPLの開始アドレスにPCを設定
+        
+        // RST 00H命令のハンドラを設定（BIOSコール用）
+        cpu.rstHandler = { [weak self] functionId in
+            guard let self = self else { return false }
+            return self.handleBIOSCall(functionId: functionId)
+        }
+        
+        // IPLコードの内容をデバッグログに出力
+        if let iplCode = iplCode {
+            debug.appendLog("IPLコード（最初の16バイト）:")
+            var hexDump = ""
+            for i in 0..<min(16, iplCode.count) {
+                hexDump += String(format: "%02X ", iplCode[i])
+            }
+            debug.appendLog(hexDump)
+        }
+        
+        // IPLコードを数ステップ実行
+        let initialSteps = 100  // 最初のステップ数
+        var result = cpu.execute(steps: initialSteps)
+        
+        if result < 0 {
+            debug.appendLog("❗ IPL実行初期段階でエラーが発生しました: \(result)")
+            return
+        }
+        
+        debug.appendLog("IPL初期段階実行完了: PC=0x\(String(format: "%04X", cpu.pc))")
+        
+        // 追加のステップを実行（OSのロード処理）
+        let additionalSteps = 5000  // 追加のステップ数
+        result = cpu.execute(steps: additionalSteps)
+        
+        if result < 0 {
+            debug.appendLog("❗ OS読み込み段階でエラーが発生しました: \(result)")
+            return
+        }
+        
+        // メモリ状態の確認（OS領域）
+        let osStartAddr = 0x100  // OSの開始アドレス（仮定）
+        var osSignature = ""
+        for i in 0..<8 {
+            if osStartAddr + i < cpu.memory.count {
+                osSignature += String(format: "%02X ", cpu.memory[osStartAddr + i])
+            }
+        }
+        debug.appendLog("OS領域の先頭8バイト: \(osSignature)")
+        
+        osBooted = true
+        debug.appendLog("OSのブートに成功しました: PC=0x\(String(format: "%04X", cpu.pc))")
+        
+        // OS起動後の処理
+        // 必要に応じてPMD88プログラムをロード
+        if let programData = programData {
+            loadPMD88Program(programData)
+        }
+    }
+    
+    // BIOS関数のフック設定
+    private func setupBIOSHooks() {
+        // Z80 CPUのフックアドレスを設定
+        // PC-88のBIOS関数のアドレスにフックを設定
+        
+        // BIOS関数のフックアドレス
+        let biosHookAddresses = [
+            0x4000,  // ディスク読み込み
+            0x4003,  // ディスク書き込み
+            0x4006,  // ディスクステータス確認
+            0x4009,  // コンソール入力
+            0x400C,  // コンソール出力
+            0x400F,  // プリンタ出力
+            0x4012,  // 補助入力
+            0x4015,  // 補助出力
+            0x4018,  // 文字列出力
+            0x401B,  // コンソールステータス確認
+            0x401E,  // メモリ確認
+            0x4021   // システム情報取得
+        ]
+        
+        // BIOSフックを設定
+        for (index, address) in biosHookAddresses.enumerated() {
+            // RSTオペコード（リスタート命令）を設定
+            cpu.memory[address] = 0xC7  // RST 00H
+            
+            // 関数IDを設定（0x00～0x0B）
+            cpu.memory[address + 1] = UInt8(index)
+            
+            // 戻り命令を設定
+            cpu.memory[address + 2] = 0xC9  // RET
+        }
+        
+        // 割り込みベクタの設定
+        cpu.memory[0x0000] = 0xF3  // DI（割り込み禁止）
+        cpu.memory[0x0001] = 0xC3  // JP
+        cpu.memory[0x0002] = 0x00  // 0x4100（割り込みハンドラのアドレス）
+        cpu.memory[0x0003] = 0x41
+        
+        // RST 00H（0x0000）のハンドラ設定
+        cpu.memory[0x0008] = 0xCD  // CALL
+        cpu.memory[0x0009] = 0x00  // 0x4100（BIOSハンドラのアドレス）
+        cpu.memory[0x000A] = 0x41
+        cpu.memory[0x000B] = 0xC9  // RET
+        
+        // BIOSハンドラ（0x4100）の設定
+        cpu.memory[0x4100] = 0xF5  // PUSH AF
+        cpu.memory[0x4101] = 0xC5  // PUSH BC
+        cpu.memory[0x4102] = 0xD5  // PUSH DE
+        cpu.memory[0x4103] = 0xE5  // PUSH HL
+        cpu.memory[0x4104] = 0xC9  // RET（実際の処理はRSTハンドラで行う）
+        
+        debug.appendLog("BIOS関数のフックを設定しました（\(biosHookAddresses.count)個の関数）")
+    }
+    
+    // BIOSコール処理
+    private func handleBIOSCall(functionId: UInt8) -> Bool {
+        // BIOS関数の処理
+        switch functionId {
+        case 0x00:  // ディスク読み込み
+            let track = cpu.c
+            let sector = cpu.e
+            let dmaAddress = cpu.hl()
+            
+            debug.appendLog("BIOS: ディスク読み込み - トラック: \(track), セクタ: \(sector), DMAアドレス: 0x\(String(format: "%04X", dmaAddress))")
+            
+            // ディスクからデータを読み込む処理
+            if let d88Data = d88Data {
+                if readSectorFromD88(d88Data, track: Int(track), sector: Int(sector), address: dmaAddress) {
+                    // 成功
+                    cpu.a = 0x00  // エラーなし
+                    return true
+                }
+            }
+            
+            // 失敗
+            cpu.a = 0x01  // エラーあり
+            return true
+            
+        case 0x01:  // ディスク書き込み
+            // 書き込みは実装しない（読み取り専用）
+            cpu.a = 0x00  // エラーなし
+            return true
+            
+        case 0x02:  // ディスクステータス確認
+            cpu.a = 0x00  // 常に準備完了
+            return true
+            
+        case 0x03:  // コンソール入力
+            // キー入力は常に0を返す（入力なし）
+            cpu.a = 0x00
+            return true
+            
+        case 0x04:  // コンソール出力
+            let char = cpu.c
+            debug.appendLog("BIOS: コンソール出力 - 文字: \(char) (\(String(format: "%c", char)))")
+            return true
+            
+        case 0x05:  // プリンタ出力
+            // プリンタ出力は無視
+            cpu.a = 0x00  // エラーなし
+            return true
+            
+        case 0x06:  // 補助入力
+            // 補助入力は常に0を返す（入力なし）
+            cpu.a = 0x00
+            return true
+            
+        case 0x07:  // 補助出力
+            // 補助出力は無視
+            cpu.a = 0x00  // エラーなし
+            return true
+            
+        case 0x08:  // 文字列出力
+            // HLレジスタが指すメモリから$で終わる文字列を出力
+            var address = cpu.hl()
+            var output = ""
+            
+            while true {
+                let char = cpu.memory[address]
+                if char == 0x24 { // '$'で終了
+                    break
+                }
+                output.append(Character(UnicodeScalar(char)))
+                address += 1
+            }
+            
+            debug.appendLog("BIOS: 文字列出力 - \(output)")
+            return true
+            
+        case 0x09:  // コンソールステータス確認
+            // 常に入力準備完了を返す
+            cpu.a = 0xFF
+            return true
+            
+        case 0x0A:  // メモリ確認
+            // メモリサイズを返す（64KB固定）
+            cpu.hl = 0xFFFF
+            return true
+            
+        case 0x0B:  // システム情報取得
+            // PC-8801を示す情報を返す
+            cpu.a = 0xA0  // PC-8801識別子
+            return true
+            
+        default:
+            // 未実装の関数
+            debug.appendLog("BIOS: 未実装の関数呼び出し - 関数ID: \(functionId)")
+            return false
+        }
     }
     
     // MARK: - ポート入出力
     func portIn(port: UInt16) -> UInt8 {
         // ポート入力処理
         switch port {
+        case 0x30:  // PC-88 システムポート
+            return 0x00  // システム状態
+            
+        case 0x31:  // PC-88 設定ポート
+            return 0x00  // 設定状態
+            
+        case 0x32:  // PC-88 キーボードポート
+            return 0x00  // キー入力なし
+            
         case 0xA0:  // OPNAアドレスポート
             return 0  // 常に0を返す（読み込み可能状態）
             
@@ -473,7 +823,12 @@ class PC88Core: ObservableObject {
         case 0xA3:  // 拡張ポート
             return 0
             
+        case 0xFC, 0xFE:  // ディスクI/Oポート
+            return 0x00  // ディスク準備完了
+            
         default:
+            // デバッグログに未実装のポート入力を記録
+            debug.appendLog("未実装のポート入力: 0x\(String(format: "%04X", port))")
             return 0
         }
     }
@@ -481,6 +836,9 @@ class PC88Core: ObservableObject {
     func portOut(port: UInt16, value: UInt8) {
         // ポート出力処理
         switch port {
+        case 0x31:  // PC-88 ディスプレイモード設定
+            debug.appendLog("ディスプレイモード設定: 0x\(String(format: "%02X", value))")
+            
         case 0xA0:  // OPNAアドレスポート
             cpu.selectedOPNARegister = value
             
@@ -493,9 +851,108 @@ class PC88Core: ObservableObject {
         case 0xA2, 0xA3:  // 拡張ポート
             break
             
+        case 0xFF:  // ディスクコマンドポート
+            handleDiskCommand(value)
+            
         default:
+            // デバッグログに未実装のポート出力を記録
+            debug.appendLog("未実装のポート出力: 0x\(String(format: "%04X", port)) = 0x\(String(format: "%02X", value))")
             break
         }
+    }
+    
+    // ディスクコマンド処理
+    private func handleDiskCommand(_ command: UInt8) {
+        debug.appendLog("ディスクコマンド: 0x\(String(format: "%02X", command))")
+        
+        switch command {
+        case 0x0A:  // データ読み込み
+            // ディスクからデータを読み込む処理
+            break
+            
+        case 0x0B:  // ステータス確認
+            // ディスクステータスを設定
+            break
+            
+        case 0x0C:  // コマンド完了
+            // コマンド完了処理
+            break
+            
+        case 0x0D:  // データ転送
+            // データ転送処理
+            break
+            
+        default:
+            debug.appendLog("未実装のディスクコマンド: 0x\(String(format: "%02X", command))")
+            break
+        }
+    }
+    
+    // D88ファイルからセクタを読み込む
+    private func readSectorFromD88(_ d88Data: Data, track: Int, sector: Int, address: Int) -> Bool {
+        let rawBytes = [UInt8](d88Data)
+        
+        // D88フォーマットからトラックオフセットを取得
+        if rawBytes.count < 0x20 + (track * 4) + 4 {
+            debug.appendLog("❗ トラックオフセットの取得に失敗: トラック \(track)")
+            return false
+        }
+        
+        let trackOffsetPos = 0x20 + (track * 4)
+        let trackOffset = UInt32(rawBytes[trackOffsetPos]) |
+                          (UInt32(rawBytes[trackOffsetPos + 1]) << 8) |
+                          (UInt32(rawBytes[trackOffsetPos + 2]) << 16) |
+                          (UInt32(rawBytes[trackOffsetPos + 3]) << 24)
+        
+        if trackOffset == 0 || Int(trackOffset) >= rawBytes.count {
+            debug.appendLog("❗ 無効なトラックオフセット: 0x\(String(format: "%08X", trackOffset))")
+            return false
+        }
+        
+        // トラック内のセクタを検索
+        var sectorOffset = Int(trackOffset)
+        let sectorCount = 16  // 通常のセクタ数
+        
+        for _ in 0..<sectorCount {
+            if sectorOffset + 0x10 >= rawBytes.count {
+                break
+            }
+            
+            // セクタヘッダからセクタ番号を取得
+            let sectorNumber = rawBytes[sectorOffset + 2]
+            
+            if Int(sectorNumber) == sector {
+                // セクタサイズを取得
+                let sectorSize = UInt16(rawBytes[sectorOffset + 0x0E]) |
+                                (UInt16(rawBytes[sectorOffset + 0x0F]) << 8)
+                
+                // セクタデータの開始位置
+                let dataOffset = sectorOffset + 0x10
+                
+                if dataOffset + Int(sectorSize) <= rawBytes.count {
+                    // セクタデータをメモリにロード
+                    for i in 0..<Int(sectorSize) {
+                        if address + i < cpu.memory.count {
+                            cpu.memory[address + i] = rawBytes[dataOffset + i]
+                        }
+                    }
+                    
+                    debug.appendLog("セクタ読み込み成功: トラック \(track), セクタ \(sector), サイズ \(sectorSize)バイト")
+                    return true
+                } else {
+                    debug.appendLog("❗ セクタデータの範囲外: トラック \(track), セクタ \(sector)")
+                    return false
+                }
+            }
+            
+            // 次のセクタヘッダへ
+            let sectorSize = UInt16(rawBytes[sectorOffset + 0x0E]) |
+                            (UInt16(rawBytes[sectorOffset + 0x0F]) << 8)
+            sectorOffset += 0x10 + Int(sectorSize)
+        }
+        
+        debug.appendLog("❗ セクタが見つかりません: トラック \(track), セクタ \(sector)")
+        return false
     }
     
     // MARK: - 公開メソッド

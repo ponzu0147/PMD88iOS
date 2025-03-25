@@ -589,19 +589,41 @@ class PC88PMD {
                 pc88.debug.appendLog("オーディオエンジン開始 - 全音源初期化完了")
             }
             
-            // メインループ - タイマーベースでCPUを実行
-            // タイマーを使用して処理を分割
-            let _: TimeInterval = 0.01 // 10ミリ秒ごとに処理
-            let instructionsPerBatch = 10000 // 一度に処理する命令数
+            // メインループ - CPUクロックに合わせた処理を実装
+            let cpuClock: Double = 8_000_000 // PC-8801の8MHzクロック
+            let instructionsPerSecond: Double = 2_000_000 // Z80はおおよそ1秒間に2百万命令を実行
+            let targetInterval: TimeInterval = 0.005 // 5ミリ秒ごとに処理（より細かい粒度）
+            let instructionsPerInterval = Int(instructionsPerSecond * targetInterval) // 1インターバルあたりの命令数
+
             var loopSteps = 0
             var lastUpdateTime = Date()
+            var lastAudioUpdateTime = Date()
+            var lastStepTime = Date()
+            var executedInstructions: Double = 0
+            var wallClockTime: TimeInterval = 0
+
+            pc88.debug.appendLog("📊 Z80エミュレーション設定: \(Int(cpuClock))Hz, 1秒間の命令数: \(Int(instructionsPerSecond))")
+            pc88.debug.appendLog("📊 インターバル: \(targetInterval * 1000)ms, 1インターバルの命令数: \(instructionsPerInterval)")
             
             // メインループ
             while !self.shouldStop && self.programRunning {
-                // CPU命令を一定数処理
-                for _ in 0..<instructionsPerBatch {
+                let loopStartTime = Date()
+                
+                // 経過時間を計測
+                let currentTime = Date()
+                let elapsedTime = currentTime.timeIntervalSince(lastStepTime)
+                wallClockTime += elapsedTime
+                lastStepTime = currentTime
+                
+                // 経過時間に基づいて実行すべき命令数を計算
+                let targetInstructions = instructionsPerSecond * elapsedTime
+                let instructionsToExecute = max(1, min(instructionsPerInterval, Int(targetInstructions - executedInstructions)))
+                
+                // CPU命令を実行
+                for _ in 0..<instructionsToExecute {
                     _ = pc88.cpu.step()
                     loopSteps += 1
+                    executedInstructions += 1
                     
                     // 停止要求があれば即座に中断
                     if self.shouldStop {
@@ -622,8 +644,8 @@ class PC88PMD {
                         }
                     }
                     
-                    // 一定ステップ数ごとに音源状態を更新
-                    if loopSteps % 500 == 0 {
+                    // 一定ステップ数ごとに音源状態を確認（頻度を減らす）
+                    if loopSteps % 1000 == 0 {
                         // PMD88ワークエリアの状態を確認
                         self.checkPMD88WorkingAreaStatus()
                         
@@ -654,10 +676,10 @@ class PC88PMD {
                     }
                 }
                 
-                // 定期的に音源状態を更新 - 間隔を短縮
+                // 定期的に音源状態を更新
                 let now = Date()
-                if now.timeIntervalSince(lastUpdateTime) >= 0.03 { // 30msごとに更新に短縮
-                    lastUpdateTime = now
+                if now.timeIntervalSince(lastAudioUpdateTime) >= 0.02 { // 20msごとに更新
+                    lastAudioUpdateTime = now
                     
                     // オーディオ状態の更新をメインスレッドで行う
                     DispatchQueue.main.async {
@@ -668,12 +690,25 @@ class PC88PMD {
                     }
                     
                     // PMD88ワークエリアの状態を定期的に確認
-                    // メインスレッドではなく現在のスレッドで実行する
                     self.checkPMD88WorkingAreaStatus()
                     
-                    // OPNAレジスタの状態をデバッグ出力
-                    if loopSteps % 5000 == 0 {
-                        // キーオンレジスタの状態を出力
+                    // デバッグ情報の出力（1秒間に1回程度）
+                    if now.timeIntervalSince(lastUpdateTime) >= 1.0 {
+                        lastUpdateTime = now
+                        
+                        // タイミング情報を出力
+                        let actualInstructionsPerSecond = executedInstructions / wallClockTime
+                        pc88.debug.appendLog("📊 Z80速度: \(Int(actualInstructionsPerSecond))命令/秒 (目標: \(Int(instructionsPerSecond)))")
+                        
+                        // 実行速度のずれを計算
+                        let speedRatio = actualInstructionsPerSecond / instructionsPerSecond
+                        pc88.debug.appendLog("📊 実行速度比率: \(String(format: "%.2f", speedRatio))x (1.0が等速)")
+                        
+                        // カウンタをリセット
+                        executedInstructions = 0
+                        wallClockTime = 0
+                        
+                        // OPNAレジスタの状態を出力
                         let keyOnReg = pc88.cpu.opnaRegisters[0x28]
                         pc88.debug.appendLog("OPNA キーオンレジスタ(0x28): 0x\(String(format: "%02X", keyOnReg))")
                         
@@ -698,8 +733,16 @@ class PC88PMD {
                     }
                 }
                 
-                // 一定時間スリープして他の処理に時間を譲る - 間隔を短縮
-                Thread.sleep(forTimeInterval: 0.0005) // 0.5msに短縮
+                // 処理時間を測定
+                let processingTime = Date().timeIntervalSince(loopStartTime)
+                
+                // 目標間隔との差を計算
+                let sleepTime = max(0, targetInterval - processingTime)
+                
+                // 一定時間スリープして他の処理に時間を譲る
+                if sleepTime > 0 {
+                    Thread.sleep(forTimeInterval: sleepTime)
+                }
             }
             
             // 終了処理
