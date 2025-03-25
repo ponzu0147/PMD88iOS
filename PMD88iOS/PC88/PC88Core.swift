@@ -637,8 +637,23 @@ class PC88Core: ObservableObject {
         // OS起動後の処理
         // 必要に応じてPMD88プログラムをロード
         if let programData = programData {
-            loadPMD88Program(programData)
+            loadPMD88ProgramData(programData)
         }
+    }
+    
+    // PMD88プログラムデータをロード
+    private func loadPMD88ProgramData(_ data: [UInt8]) {
+        // PMD88プログラムをメモリにロード
+        debug.appendLog("PMD88プログラムをメモリにロード: 0xaa00から\(data.count)バイト")
+        cpu.loadMemory(data: Data(data), offset: 0xaa00)
+        
+        // 曲データのアドレスをPMD88ワークエリアに設定
+        // ワークエリアのアドレスは0x0100と仮定
+        let songAddressLow: UInt8 = 0x00  // 0x4c00 & 0xFF
+        let songAddressHigh: UInt8 = 0x4c  // (0x4c00 >> 8) & 0xFF
+        cpu.writeMemory(at: 0x0100, value: songAddressLow)
+        cpu.writeMemory(at: 0x0101, value: songAddressHigh)
+        debug.appendLog("曲データアドレスを設定: 0x\(String(format: "%04X", 0x4c00))")
     }
     
     // BIOS関数のフック設定
@@ -778,7 +793,7 @@ class PC88Core: ObservableObject {
             
         case 0x0A:  // メモリ確認
             // メモリサイズを返す（64KB固定）
-            cpu.hl = 0xFFFF
+            cpu.setHl(0xFFFF)
             return true
             
         case 0x0B:  // システム情報取得

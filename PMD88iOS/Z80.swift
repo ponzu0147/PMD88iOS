@@ -49,6 +49,9 @@ public class Z80 {
     var outPortCounter: Int = 0
     var inPortCounter: Int = 0
     
+    // RST命令のハンドラ
+    var rstHandler: ((UInt8) -> Bool)? = nil
+    
     // FM音源関連
     var sel44Address: Int = -1
     var sel46Address: Int = -1
