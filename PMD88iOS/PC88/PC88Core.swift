@@ -279,38 +279,39 @@ class PC88Core: ObservableObject {
                 var toneData: [UInt8]? = nil
                 
                 // D88ディスクオブジェクトを使用して抽出を試みる
-                let disk = D88Disk(from: data)
-                let extractionResult = disk.extractPMD88MusicData()
-                
-                if let programData = extractionResult.programData, !programData.isEmpty {
-                    pmdProgramData = programData
-                    debug.appendLog("✅ D88DiskクラスからPMD88プログラムデータ抽出成功: \(programData.count)バイト")
+                if let disk = D88Disk(data: data) {
+                    let extractionResult = disk.extractPMD88MusicData()
                     
-                    // プログラムデータの先頭を表示
-                    let headerBytes = programData.prefix(16)
-                    var headerHex = ""
-                    for byte in headerBytes {
-                        headerHex += String(format: "%02X ", byte)
+                    if let programData = extractionResult.programData, !programData.isEmpty {
+                        pmdProgramData = programData
+                        debug.appendLog("✅ D88DiskクラスからPMD88プログラムデータ抽出成功: \(programData.count)バイト")
+                        
+                        // プログラムデータの先頭を表示
+                        let headerBytes = programData.prefix(16)
+                        var headerHex = ""
+                        for byte in headerBytes {
+                            headerHex += String(format: "%02X ", byte)
+                        }
+                        debug.appendLog("プログラムデータ先頭: \(headerHex)")
                     }
-                    debug.appendLog("プログラムデータ先頭: \(headerHex)")
-                }
                 
-                if let extractedMusicData = extractionResult.musicData, !extractedMusicData.isEmpty {
-                    musicData = extractedMusicData
-                    debug.appendLog("✅ D88Diskクラスから曲データ抽出成功: \(extractedMusicData.count)バイト")
+                    if let extractedMusicData = extractionResult.musicData, !extractedMusicData.isEmpty {
+                        musicData = extractedMusicData
+                        debug.appendLog("✅ D88Diskクラスから曲データ抽出成功: \(extractedMusicData.count)バイト")
+                        
+                        // 曲データの先頭を表示
+                        let headerBytes = extractedMusicData.prefix(16)
+                        var headerHex = ""
+                        for byte in headerBytes {
+                            headerHex += String(format: "%02X ", byte)
+                        }
+                        debug.appendLog("曲データ先頭: \(headerHex)")
+                    }
                     
-                    // 曲データの先頭を表示
-                    let headerBytes = extractedMusicData.prefix(16)
-                    var headerHex = ""
-                    for byte in headerBytes {
-                        headerHex += String(format: "%02X ", byte)
+                    if let extractedToneData = extractionResult.toneData, !extractedToneData.isEmpty {
+                        toneData = extractedToneData
+                        debug.appendLog("✅ D88Diskクラスから音色データ抽出成功: \(extractedToneData.count)バイト")
                     }
-                    debug.appendLog("曲データ先頭: \(headerHex)")
-                }
-                
-                if let extractedToneData = extractionResult.toneData, !extractedToneData.isEmpty {
-                    toneData = extractedToneData
-                    debug.appendLog("✅ D88Diskクラスから音色データ抽出成功: \(extractedToneData.count)バイト")
                 }
                 
                 // D88Diskクラスで抽出できなかった場合は、セクタデータから直接抽出を試みる
@@ -386,12 +387,15 @@ class PC88Core: ObservableObject {
                 }
                 
                 // D88ファイルからPMD88関連ファイルを抽出
-                let pmd88Files = disk.extractPMD88Files()
-                
-                // mcgファイルをPMD88クラスに設定
-                if let mcgData = pmd88Files["mcg"] {
-                    debug.appendLog("mcgファイルを抽出しました: \(mcgData.count)バイト")
-                    pmd.setMCGBinaryData(mcgData)
+                var pmd88Files: [String: [UInt8]] = [:]
+                if let disk = D88Disk(data: data) {
+                    pmd88Files = disk.extractPMD88Files()
+                    
+                    // mcgファイルをPMD88クラスに設定
+                    if let mcgData = pmd88Files["mcg"] {
+                        debug.appendLog("mcgファイルを抽出しました: \(mcgData.count)バイト")
+                        pmd.setMCGBinaryData(mcgData)
+                    }
                 }
                 
                 // 抽出したPMD88データをメモリに格納

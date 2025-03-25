@@ -209,4 +209,98 @@ class D88Disk {
         
         return info
     }
+    
+    // PMD88プログラムと音楽データを抽出
+    func extractPMD88MusicData() -> (programData: [UInt8]?, musicData: [UInt8]?, toneData: [UInt8]?) {
+        // 初期値
+        var programData: [UInt8]? = nil
+        var musicData: [UInt8]? = nil
+        var toneData: [UInt8]? = nil
+        
+        // PMD88プログラムは通常トラック0にある
+        if trackCount > 0, let track0 = tracks[0] {
+            // トラック0の全セクタデータを結合
+            var allSectorData: [UInt8] = []
+            for sector in track0.sectors {
+                allSectorData.append(contentsOf: sector.data)
+            }
+            
+            // PMD88シグネチャを探す
+            // "PMD88"のASCIIコード: [0x50, 0x4D, 0x44, 0x38, 0x38]
+            let pmdSignature: [UInt8] = [0x50, 0x4D, 0x44, 0x38, 0x38]
+            
+            // シグネチャを探す
+            for i in 0..<(allSectorData.count - pmdSignature.count) {
+                var found = true
+                for j in 0..<pmdSignature.count {
+                    if allSectorData[i + j] != pmdSignature[j] {
+                        found = false
+                        break
+                    }
+                }
+                
+                if found {
+                    // PMD88プログラムを抽出
+                    let programStartIndex = max(0, i - 512)  // シグネチャの512バイト前から
+                    let programEndIndex = min(allSectorData.count, i + 16384)  // 16KBほど
+                    programData = Array(allSectorData[programStartIndex..<programEndIndex])
+                    
+                    // 曲データは通常シグネチャから4KB後にある
+                    let musicStartOffset = min(allSectorData.count - 1, i + 4096)
+                    let musicEndIndex = min(allSectorData.count, musicStartOffset + 8192)  // 8KBほど
+                    if musicEndIndex > musicStartOffset {
+                        musicData = Array(allSectorData[musicStartOffset..<musicEndIndex])
+                    }
+                    
+                    // 音色データは通常曲データの後にある
+                    let toneStartOffset = min(allSectorData.count - 1, musicEndIndex)
+                    let toneEndIndex = min(allSectorData.count, toneStartOffset + 4096)  // 4KBほど
+                    if toneEndIndex > toneStartOffset {
+                        toneData = Array(allSectorData[toneStartOffset..<toneEndIndex])
+                    }
+                    
+                    break
+                }
+            }
+        }
+        
+        return (programData, musicData, toneData)
+    }
+    
+    // D88ファイルからPMD88関連ファイルを抽出
+    func extractPMD88Files() -> [String: [UInt8]] {
+        var files: [String: [UInt8]] = [:]
+        
+        // トラック0のデータを結合
+        if trackCount > 0, let track0 = tracks[0] {
+            var allSectorData: [UInt8] = []
+            for sector in track0.sectors {
+                allSectorData.append(contentsOf: sector.data)
+            }
+            
+            // MCGファイルのパターンを探す
+            // "MCG"のASCIIコード: [0x4D, 0x43, 0x47]
+            let mcgSignature: [UInt8] = [0x4D, 0x43, 0x47]
+            
+            for i in 0..<(allSectorData.count - mcgSignature.count) {
+                var found = true
+                for j in 0..<mcgSignature.count {
+                    if allSectorData[i + j] != mcgSignature[j] {
+                        found = false
+                        break
+                    }
+                }
+                
+                if found {
+                    // MCGデータを抽出
+                    let mcgStartIndex = max(0, i - 16)  // シグネチャの少し前から
+                    let mcgEndIndex = min(allSectorData.count, i + 4096)  // 4KBほど
+                    files["mcg"] = Array(allSectorData[mcgStartIndex..<mcgEndIndex])
+                    break
+                }
+            }
+        }
+        
+        return files
+    }
 }
