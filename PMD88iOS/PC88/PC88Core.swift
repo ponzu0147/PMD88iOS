@@ -49,6 +49,15 @@ class PC88Core: ObservableObject {
     
     // UI制御用
     @Published var runButtonEnabled = true
+    
+    // フォントROM
+    private var fontROM = PC88FontROM()
+    
+    // BIOS ROM
+    private var biosROM = PC88BIOS()
+    
+    // リズム音色サンプル
+    private var rhythmSamples = RhythmSampleManager()
     @Published var stopButtonEnabled = false
     @Published var resetButtonEnabled = true
     
@@ -108,10 +117,66 @@ class PC88Core: ObservableObject {
             }
         }
         
+        // リソースファイルの読み込み
+        loadResourceFiles()
+        
         // メモリ初期化
         loadPMD2G()
         
         debug.appendLog("Z80 CPU初期化完了")
+    }
+    
+    // MARK: - リソースファイルの読み込み
+    private func loadResourceFiles() {
+        // フォントROMの読み込み
+        if fontROM.loadFontROMFromBundle() {
+            debug.appendLog("フォントROMを読み込みました")
+        } else {
+            debug.appendLog("❗ フォントROMの読み込みに失敗しました")
+        }
+        
+        // BIOSの読み込み
+        if biosROM.loadBIOSFromBundle() {
+            debug.appendLog("BIOS ROMを読み込みました")
+            // BIOSをメモリにマッピング
+            mapBIOSToMemory()
+        } else {
+            debug.appendLog("❗ BIOS ROMの読み込みに失敗しました")
+        }
+        
+        // リズム音色サンプルの読み込み
+        if rhythmSamples.loadSamplesFromBundle() {
+            debug.appendLog("リズム音色サンプルを読み込みました")
+        } else {
+            debug.appendLog("❗ リズム音色サンプルの読み込みに失敗しました")
+        }
+    }
+    
+    // BIOSをメモリにマッピング
+    private func mapBIOSToMemory() {
+        // N88.ROM (メインROM) を 0x0000-0x7FFF にマッピング
+        if let biosData = biosROM.getBIOSData(name: "N88") {
+            for i in 0..<min(biosData.count, 0x8000) {
+                cpu.memory[i] = biosData[i]
+            }
+            debug.appendLog("N88 ROMをメモリにマッピングしました (0x0000-0x7FFF)")
+        }
+        
+        // N88N.ROM (N-BASIC) を 0x8000-0xFFFF にマッピング
+        if let biosData = biosROM.getBIOSData(name: "N88N") {
+            for i in 0..<min(biosData.count, 0x8000) {
+                cpu.memory[0x8000 + i] = biosData[i]
+            }
+            debug.appendLog("N88N ROMをメモリにマッピングしました (0x8000-0xFFFF)")
+        }
+        
+        // DISK.ROM (ディスクBIOS) を 0xE800-0xFFFF にマッピング
+        if let biosData = biosROM.getBIOSData(name: "DISK") {
+            for i in 0..<min(biosData.count, 0x1800) {
+                cpu.memory[0xE800 + i] = biosData[i]
+            }
+            debug.appendLog("DISK ROMをメモリにマッピングしました (0xE800-0xFFFF)")
+        }
     }
     
     // MARK: - パブリッシャーの購読設定
@@ -1252,5 +1317,8 @@ class PC88Core: ObservableObject {
         debug.printPMD88WorkingAreaStatus()
     }
     
-
+    // 指定した文字コードのフォントデータを取得
+    func getFontData(for charCode: UInt8) -> [UInt8] {
+        return fontROM.getFontData(for: charCode)
+    }
 }

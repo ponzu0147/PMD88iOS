@@ -267,11 +267,15 @@ class PC88Screen: ObservableObject {
     
     /// 文字コードに対応するフォントデータを取得する
     private func getFontData(for charCode: UInt8) -> [UInt8] {
-        // 仮のフォントデータ（8x8ピクセル）
-        // 実際の実装では、PC-88のフォントROMデータを使用する必要があります
+        // PC88Coreからフォントデータを取得
+        if let core = pc88Core {
+            return core.getFontData(for: charCode)
+        }
+        
+        // PC88Coreが利用できない場合はフォールバックフォントを使用
         var fontData: [UInt8] = Array(repeating: 0, count: 8)
         
-        // 簡易的なフォントデータを生成（デバッグ用）
+        // 簡易的なフォントデータを生成（フォールバック用）
         switch charCode {
         case 0x20: // スペース
             fontData = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
