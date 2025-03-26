@@ -36,11 +36,79 @@ struct SectorAccess {
 }
 
 // MARK: - Drive Emulator
+// MARK: - Cache Statistics
+/// キャッシュの統計情報を保持する構造体
+struct CacheStatistics {
+    let currentSize: Int          // 現在のキャッシュサイズ
+    let maxSize: Int             // 最大キャッシュサイズ
+    let hitCount: Int            // キャッシュヒット数
+    let missCount: Int           // キャッシュミス数
+    let hitRate: Double          // ヒット率
+    let evictionCount: Int       // キャッシュからの削除数
+    let timeoutCount: Int        // タイムアウトによる無効化数
+    let averageAccessTime: TimeInterval  // 平均アクセス時間
+    let lastAccessTime: Date?     // 最後のアクセス時刻
+    
+    var utilizationRate: Double { Double(currentSize) / Double(maxSize) }
+    var missRate: Double { 1.0 - hitRate }
+}
+
+/// 内部用の統計情報記録構造体
+struct CacheStats {
+    var hitCount: Int = 0
+    var missCount: Int = 0
+    var evictionCount: Int = 0
+    var timeoutCount: Int = 0
+    var totalAccessTime: TimeInterval = 0
+    var lastAccessTime: Date?
+    
+    var totalCount: Int { hitCount + missCount }
+    var hitRate: Double { totalCount > 0 ? Double(hitCount) / Double(totalCount) : 0 }
+    var averageAccessTime: TimeInterval { totalCount > 0 ? totalAccessTime / Double(totalCount) : 0 }
+    
+    mutating func recordHit(accessTime: TimeInterval) {
+        hitCount += 1
+        totalAccessTime += accessTime
+        lastAccessTime = Date()
+    }
+    
+    mutating func recordMiss(accessTime: TimeInterval) {
+        missCount += 1
+        totalAccessTime += accessTime
+        lastAccessTime = Date()
+    }
+    
+    mutating func recordEviction() {
+        evictionCount += 1
+    }
+    
+    mutating func recordTimeout() {
+        timeoutCount += 1
+    }
+}
+
+// MARK: - Cache Configuration
+struct CacheConfig {
+    static let maxCacheSize = 256 // 最大キャッシュサイズ（セクタ数）
+    static let cacheTimeout: TimeInterval = 5.0 // キャッシュタイムアウト（秒）
+}
+
+// MARK: - Cache Entry
+struct CacheEntry {
+    let data: [UInt8]
+    let timestamp: Date
+    
+    var isValid: Bool {
+        return Date().timeIntervalSince(timestamp) < CacheConfig.cacheTimeout
+    }
+}
+
 class DriveEmulator {
     private var driveState: DriveState
     private var disk: D88Disk
     private var lastError: DriveError?
-    private var sectorCache: [Int: [UInt8]] = [:]
+    private var sectorCache: [Int: CacheEntry] = [:]
+    private var cacheStats = CacheStats()
     
     init(disk: D88Disk) {
         self.disk = disk
@@ -80,10 +148,23 @@ class DriveEmulator {
         }
         
         // キャッシュチェック
+        let startTime = Date()
         let cacheKey = track * 100 + sector
-        if let cachedData = sectorCache[cacheKey] {
-            return cachedData
+        
+        if let cachedEntry = sectorCache[cacheKey] {
+            if cachedEntry.isValid {
+                let accessTime = Date().timeIntervalSince(startTime)
+                cacheStats.recordHit(accessTime: accessTime)
+                return cachedEntry.data
+            } else {
+                cacheStats.recordTimeout()
+            }
         }
+        
+        // 古いキャッシュエントリを削除
+        cleanCache()
+        let accessTime = Date().timeIntervalSince(startTime)
+        cacheStats.recordMiss(accessTime: accessTime)
         
         // 1. ヘッド移動
         try seekTrack(track)
@@ -181,5 +262,58 @@ class DriveEmulator {
     // 最後のエラーを取得
     func getLastError() -> DriveError? {
         return lastError
+    }
+    
+    // MARK: - Cache Management
+    
+    /// キャッシュをクリア
+    func clearCache() {
+        sectorCache.removeAll()
+    }
+    
+    /// 古いキャッシュエントリを削除
+    private func cleanCache() {
+        let now = Date()
+        sectorCache = sectorCache.filter { $0.value.isValid }
+        
+        // キャッシュサイズが最大値を超えている場合、古いエントリから削除
+        if sectorCache.count > CacheConfig.maxCacheSize {
+            let sortedEntries = sectorCache.sorted { $0.value.timestamp > $1.value.timestamp }
+            let entriesToRemove = sortedEntries[CacheConfig.maxCacheSize...]
+            for entry in entriesToRemove {
+                sectorCache.removeValue(forKey: entry.key)
+                cacheStats.recordEviction()
+            }
+        }
+    }
+    
+    /// キャッシュを更新
+    private func updateCache(key: Int, data: [UInt8]) {
+        cleanCache() // 更新前に古いエントリを削除
+        
+        // キャッシュサイズに余裕がある場合のみ追加
+        if sectorCache.count < CacheConfig.maxCacheSize {
+            sectorCache[key] = CacheEntry(data: data, timestamp: Date())
+        }
+    }
+    
+    /// キャッシュの詳細な統計情報を取得
+    func getCacheStats() -> CacheStatistics {
+        return CacheStatistics(
+            currentSize: sectorCache.count,
+            maxSize: CacheConfig.maxCacheSize,
+            hitCount: cacheStats.hitCount,
+            missCount: cacheStats.missCount,
+            hitRate: cacheStats.hitRate,
+            evictionCount: cacheStats.evictionCount,
+            timeoutCount: cacheStats.timeoutCount,
+            averageAccessTime: cacheStats.averageAccessTime,
+            lastAccessTime: cacheStats.lastAccessTime
+        )
+    }
+    
+    /// キャッシュの統計情報をリセット
+    func resetCacheStats() {
+        cacheStats = CacheStats()
     }
 }
