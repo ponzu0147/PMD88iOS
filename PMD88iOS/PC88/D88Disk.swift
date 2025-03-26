@@ -417,4 +417,70 @@ class D88Disk {
         
         return fileData
     }
+    
+    /// ブートセクタを読み込む
+    /// - Returns: ブートセクタのデータ（256バイト）、読み込み失敗時はnil
+    func loadBootSector() -> [UInt8]? {
+        // トラック0、セクタ1がブートセクタ
+        guard let track0 = tracks[0], track0.sectorCount > 0 else {
+            return nil
+        }
+        
+        // セクタ1を探す
+        for sector in track0.sectors {
+            if sector.sectorID == 1 {
+                return sector.data
+            }
+        }
+        
+        return nil
+    }
+    
+    /// IPLコードを読み込む
+    /// - Returns: IPLコードのデータ（256バイト）、読み込み失敗時はnil
+    func loadIPLCode() -> [UInt8]? {
+        return loadBootSector()
+    }
+    
+    /// トラックとセクタ番号を指定してセクタデータを読み込む
+    /// - Parameters:
+    ///   - track: トラック番号
+    ///   - sectorID: セクタ番号
+    /// - Returns: セクタデータ、読み込み失敗時はnil
+    func readSector(track: Int, sectorID: Int) -> [UInt8]? {
+        guard track < tracks.count, let trackData = tracks[track] else {
+            return nil
+        }
+        
+        for sector in trackData.sectors {
+            if sector.sectorID == UInt8(sectorID) {
+                return sector.data
+            }
+        }
+        
+        return nil
+    }
+    
+    /// トラックとセクタ番号を指定してメモリにセクタデータをロード
+    /// - Parameters:
+    ///   - track: トラック番号
+    ///   - sectorID: セクタ番号
+    ///   - memory: メモリ配列
+    ///   - address: ロード先アドレス
+    /// - Returns: 成功時true、失敗時false
+    func loadSectorToMemory(track: Int, sectorID: Int, memory: inout [UInt8], address: Int) -> Bool {
+        guard let sectorData = readSector(track: track, sectorID: sectorID) else {
+            return false
+        }
+        
+        // メモリにセクタデータをコピー
+        for (i, byte) in sectorData.enumerated() {
+            let memAddr = address + i
+            if memAddr < memory.count {
+                memory[memAddr] = byte
+            }
+        }
+        
+        return true
+    }
 }

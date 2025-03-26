@@ -41,6 +41,9 @@ class PC88Core: ObservableObject {
     var iplCode: [UInt8]? // IPLコード
     var osData: [UInt8]?  // OSデータ
     
+    // 現在ロードされているディスク
+    private var currentDisk: D88Disk?
+    
     // Z80 CPU
     @Published var cpu = Z80()
     
@@ -666,79 +669,77 @@ class PC88Core: ObservableObject {
     
     // IPLコードのロード
     func loadIPL(from d88Data: Data) {
-        let rawBytes = [UInt8](d88Data)
-        
-        // D88フォーマットからIPLセクタを抽出
-        if rawBytes.count >= 0x2B0 + 0x100 {
-            // トラック0、セクタ1のデータ（IPLコード）を抽出
-            // D88ヘッダー（0x20バイト）+ トラックヘッダー（0x10バイト）+ セクタヘッダー（0x10バイト）= 0x40バイト
-            // 実際のIPLコードは0x2B0付近から始まる
-            
-            let iplOffset = 0x2B0  // IPLコードの開始位置（D88フォーマット依存）
-            let iplSize = 0x100    // IPLコードのサイズ（通常は256バイト）
-            
-            if iplOffset + iplSize <= rawBytes.count {
-                iplCode = Array(rawBytes[iplOffset..<(iplOffset + iplSize)])
-                
-                // IPLコードの解析（最初の数バイトを表示）
-                var iplDisassembly = "IPLコード解析:\n"
-                if iplCode!.count >= 3 && iplCode![0] == 0xF3 {
-                    iplDisassembly += "0000: F3       - DI（割り込み禁止）\n"
-                }
-                if iplCode!.count >= 6 && iplCode![1] == 0x3A && iplCode![2] == 0x02 && iplCode![3] == 0x00 {
-                    iplDisassembly += "0001: 3A 02 00 - LD A,(0002H)（機種情報の読み込み）\n"
-                }
-                if iplCode!.count >= 8 && iplCode![4] == 0xFE && iplCode![5] == 0xA0 {
-                    iplDisassembly += "0004: FE A0    - CP A0H（PC-8801との比較）\n"
-                }
-                debug.appendLog(iplDisassembly)
-                
-                // IPLコードをメモリにロード（アドレス0x0000から）
-                for (i, byte) in iplCode!.enumerated() {
-                    if i < cpu.memory.count {
-                        cpu.memory[i] = byte
-                    }
-                }
-                
-                iplLoaded = true
-                debug.appendLog("IPLコードをロードしました: \(iplSize)バイト")
-                
-                // 機種情報をメモリに設定（PC-8801用）
-                cpu.memory[0x0002] = 0xA0  // PC-8801識別子
-                
-                // PCを0x0000に設定（IPLの開始アドレス）
-                cpu.pc = 0x0000
-                
-                // OS領域の初期化（0x100から）
-                let osStartAddr = 0x100
-                for i in 0..<0x1000 { // 4KBのOS領域をクリア
-                    if osStartAddr + i < cpu.memory.count {
-                        cpu.memory[osStartAddr + i] = 0
-                    }
-                }
-                
-                // ディスクパラメータブロック（DPB）の設定
-                // 0x120-0x12Fにディスク情報を設定
-                let dpbAddr = 0x120
-                cpu.memory[dpbAddr] = 26     // セクタあたりのレコード数
-                cpu.memory[dpbAddr + 1] = 3   // ブロックシフト係数
-                cpu.memory[dpbAddr + 2] = 7   // ブロックマスク
-                cpu.memory[dpbAddr + 3] = 0   // エクステント
-                cpu.memory[dpbAddr + 4] = 242 // ディスクサイズ（ブロック数-1）の下位バイト
-                cpu.memory[dpbAddr + 5] = 0   // ディスクサイズ（ブロック数-1）の上位バイト
-                cpu.memory[dpbAddr + 6] = 63  // ディレクトリサイズ-1
-                cpu.memory[dpbAddr + 7] = 0   // ディレクトリ割り当てビットマップ1
-                cpu.memory[dpbAddr + 8] = 0   // ディレクトリ割り当てビットマップ2
-                cpu.memory[dpbAddr + 9] = 0   // チェックベクタサイズ
-                cpu.memory[dpbAddr + 10] = 2  // 予約トラック数
-            } else {
-                debug.appendLog("❗ IPLコードの抽出に失敗しました: データサイズ不足")
-                iplLoaded = false
-            }
-        } else {
-            debug.appendLog("❗ D88データからIPLコードを抽出できません: データサイズ不足")
+        // D88ディスクオブジェクトを作成
+        guard let disk = D88Disk(data: d88Data) else {
+            debug.appendLog("❗ D88ディスクの解析に失敗しました")
             iplLoaded = false
+            return
         }
+        
+        // ディスク情報をログに出力
+        debug.appendLog(disk.getDiskInfoString())
+        
+        // IPLコードを読み込む
+        guard let bootSector = disk.loadIPLCode() else {
+            debug.appendLog("❗ IPLコードの読み込みに失敗しました")
+            iplLoaded = false
+            return
+        }
+        
+        // IPLコードを保存
+        iplCode = bootSector
+        
+        // IPLコードの解析（最初の数バイトを表示）
+        var iplDisassembly = "IPLコード解析:\n"
+        if iplCode!.count >= 3 && iplCode![0] == 0xF3 {
+            iplDisassembly += "0000: F3       - DI（割り込み禁止）\n"
+        }
+        if iplCode!.count >= 6 && iplCode![1] == 0x3A && iplCode![2] == 0x02 && iplCode![3] == 0x00 {
+            iplDisassembly += "0001: 3A 02 00 - LD A,(0002H)（機種情報の読み込み）\n"
+        }
+        if iplCode!.count >= 8 && iplCode![4] == 0xFE && iplCode![5] == 0xA0 {
+            iplDisassembly += "0004: FE A0    - CP A0H（PC-8801との比較）\n"
+        }
+        debug.appendLog(iplDisassembly)
+        
+        // IPLコードをメモリにロード（アドレス0x0000から）
+        for (i, byte) in iplCode!.enumerated() {
+            if i < cpu.memory.count {
+                cpu.memory[i] = byte
+            }
+        }
+        
+        // 機種情報をメモリに設定（PC-8801用）
+        cpu.memory[0x0002] = 0xA0  // PC-8801識別子
+        
+        // OS領域の初期化（0x100から）
+        let osStartAddr = 0x100
+        for i in 0..<0x1000 { // 4KBのOS領域をクリア
+            if osStartAddr + i < cpu.memory.count {
+                cpu.memory[osStartAddr + i] = 0
+            }
+        }
+        
+        // ディスクパラメータブロック（DPB）の設定
+        // 0x120-0x12Fにディスク情報を設定
+        let dpbAddr = 0x120
+        cpu.memory[dpbAddr] = 26     // セクタあたりのレコード数
+        cpu.memory[dpbAddr + 1] = 3   // ブロックシフト係数
+        cpu.memory[dpbAddr + 2] = 7   // ブロックマスク
+        cpu.memory[dpbAddr + 3] = 0   // エクステント
+        cpu.memory[dpbAddr + 4] = 242 // ディスクサイズ（ブロック数-1）の下位バイト
+        cpu.memory[dpbAddr + 5] = 0   // ディスクサイズ（ブロック数-1）の上位バイト
+        cpu.memory[dpbAddr + 6] = 63  // ディレクトリサイズ-1
+        cpu.memory[dpbAddr + 7] = 0   // ディレクトリ割り当てビットマップ1
+        cpu.memory[dpbAddr + 8] = 0   // ディレクトリ割り当てビットマップ2
+        cpu.memory[dpbAddr + 9] = 0   // チェックベクタサイズ
+        cpu.memory[dpbAddr + 10] = 2  // 予約トラック数
+        
+        // ディスクオブジェクトを保存
+        currentDisk = disk
+        
+        iplLoaded = true
+        debug.appendLog("IPLコードをロードしました: \(iplCode!.count)バイト")
     }
     
     // IPLからOSをブート
@@ -762,6 +763,9 @@ class PC88Core: ObservableObject {
             guard let self = self else { return false }
             return self.handleBIOSCall(functionId: functionId)
         }
+        
+        // ディスクI/Oハンドラを設定
+        setupDiskIOHandlers()
         
         // IPLコードの内容をデバッグログに出力
         if let iplCode = iplCode {
@@ -1046,6 +1050,18 @@ class PC88Core: ObservableObject {
             debug.appendLog("未実装のポート出力: 0x\(String(format: "%04X", port)) = 0x\(String(format: "%02X", value))")
             break
         }
+    }
+    
+    // ディスクI/Oハンドラの設定
+    private func setupDiskIOHandlers() {
+        // ディスクI/O用のポートハンドラを設定
+        // PC-8801のディスクI/Oポート
+        // 0xD8: ディスクコマンドレジスタ
+        // 0xD9: ディスクパラメータレジスタ
+        // 0xDA: ディスクステータスレジスタ
+        // 0xDB: ディスクデータレジスタ
+        
+        debug.appendLog("ディスクI/Oハンドラを設定しました")
     }
     
     // ディスクコマンド処理
