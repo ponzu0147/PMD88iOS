@@ -16,6 +16,9 @@ class PC88Core: ObservableObject {
     @Published var logs: [String] = []
     @Published var d88Data: Data?
     
+    // MARK: - 画面表示関連のプロパティ
+    var screen: PC88Screen!
+    
     // チャンネル情報
     @Published var fmChannelInfo: [Int: ChannelInfo] = [:]
     @Published var ssgChannelInfo: [Int: ChannelInfo] = [:]
@@ -61,6 +64,9 @@ class PC88Core: ObservableObject {
         audio = PC88Audio(pc88: self)
         pmd = PC88PMD(pc88: self)
         
+        // 画面表示システムの初期化
+        screen = PC88Screen(pc88Core: self)
+        
         // Z80 CPUの初期化
         initializeZ80()
         
@@ -77,6 +83,26 @@ class PC88Core: ObservableObject {
         
         cpu.portOutHandler = { [weak self] port, value in
             self?.portOut(port: port, value: value)
+            
+            // 画面モード制御ポートの処理
+            if let strongSelf = self {
+                if port == 0x30 || port == 0x31 {
+                    // 画面モード制御ポート
+                    strongSelf.screen.handleScreenModeChange(port: port, value: value)
+                } else if port == 0x32 || port == 0x33 {
+                    // パレット制御ポート
+                    strongSelf.screen.handlePaletteChange(port: port, value: value)
+                }
+            }
+        }
+        
+        // メモリアクセスハンドラを設定
+        cpu.memoryWriteHandler = { [weak self] address, value in
+            // VRAMへの書き込みを検出して画面更新
+            if let strongSelf = self {
+                // PC88ScreenクラスにVRAM書き込みを委託
+                strongSelf.screen.writeToVRAM(address: address, value: value)
+            }
         }
         
         // メモリ初期化
@@ -445,6 +471,148 @@ class PC88Core: ObservableObject {
         // IPLからOSをブートする（自動ブートオプション）
         if iplLoaded {
             bootFromIPL()
+        }
+    }
+    
+    // MARK: - BASICコマンド処理
+    func executeBASICCommand(_ command: String) -> Bool {
+        debug.appendLog("BASICコマンド実行: \(command)")
+        
+        // コマンドを小文字に変換して先頭の空白を削除
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // コマンドの種類を判別
+        if trimmedCommand.uppercased().hasPrefix("BLOAD") {
+            return executeBLOADCommand(trimmedCommand)
+        } else if trimmedCommand.uppercased().hasPrefix("BSAVE") {
+            debug.appendLog("❗ BSAVEコマンドは現在サポートされていません")
+            return false
+        } else {
+            debug.appendLog("❗ 未知のBASICコマンド: \(trimmedCommand)")
+            return false
+        }
+    }
+    
+    // BLOADコマンドの実行
+    private func executeBLOADCommand(_ command: String) -> Bool {
+        // "BLOAD "の後のパラメータを取得
+        guard let paramStartIndex = command.range(of: "BLOAD", options: [.caseInsensitive])?.upperBound,
+              paramStartIndex < command.endIndex else {
+            debug.appendLog("❗ BLOADコマンドの形式が不正です")
+            return false
+        }
+        
+        // パラメータ部分を取得
+        let params = String(command[paramStartIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // パラメータをカンマで分割
+        let paramComponents = params.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        
+        // ファイル名は必須
+        guard let fileName = paramComponents.first, !fileName.isEmpty else {
+            debug.appendLog("❗ BLOADコマンド: ファイル名が指定されていません")
+            return false
+        }
+        
+        // ロードアドレスとオプションの取得
+        var loadAddress: Int? = nil
+        var executeAddress: Int? = nil
+        
+        if paramComponents.count > 1, let secondParam = paramComponents.dropFirst().first {
+            // 2番目のパラメータがロードアドレス
+            if let addr = parseHexOrDecimal(secondParam) {
+                loadAddress = addr
+            }
+        }
+        
+        if paramComponents.count > 2, let thirdParam = paramComponents.dropFirst(2).first {
+            // 3番目のパラメータが実行アドレス (Rオプション)
+            if thirdParam.uppercased() == "R" {
+                executeAddress = loadAddress
+            } else if let addr = parseHexOrDecimal(thirdParam) {
+                executeAddress = addr
+            }
+        }
+        
+        // ファイル名からクォーテーションを削除
+        let cleanFileName = fileName.replacingOccurrences(of: "\"", with: "")
+        
+        debug.appendLog("BLOAD: ファイル名=\(cleanFileName), ロードアドレス=\(loadAddress != nil ? String(format: "0x%04X", loadAddress!) : "デフォルト"), 実行=\(executeAddress != nil ? "あり" : "なし")")
+        
+        // D88からファイルを読み込む
+        if let fileData = loadFileFromD88(fileName: cleanFileName) {
+            // ロードアドレスが指定されていない場合はファイルヘッダから取得
+            if loadAddress == nil && fileData.count >= 2 {
+                loadAddress = Int(fileData[0]) | (Int(fileData[1]) << 8)
+                debug.appendLog("ファイルヘッダからロードアドレスを取得: 0x\(String(format: "%04X", loadAddress!))")
+            }
+            
+            // デフォルトのロードアドレス
+            if loadAddress == nil {
+                loadAddress = 0x0000
+            }
+            
+            // メモリにロード
+            let dataToLoad = fileData.count > 2 ? Array(fileData.dropFirst(2)) : fileData
+            cpu.loadMemory(data: Data(dataToLoad), offset: Int(UInt16(loadAddress!)))
+            debug.appendLog("ファイルをメモリにロード: 0x\(String(format: "%04X", Int(loadAddress! & 0xFFFF)))から\(dataToLoad.count)バイト")
+            
+            // 実行アドレスが指定されている場合は実行
+            if let execAddr = executeAddress {
+                debug.appendLog("指定アドレスからプログラムを実行: 0x\(String(format: "%04X", Int(execAddr & 0xFFFF)))")
+                cpu.pc = execAddr & 0xFFFF
+                // ここでCPUの実行を開始する必要があるかもしれない
+            }
+            
+            return true
+        } else {
+            debug.appendLog("❗ ファイル '\(cleanFileName)' が見つかりませんでした")
+            return false
+        }
+    }
+    
+    // 16進数または10進数の文字列を解析
+    private func parseHexOrDecimal(_ str: String) -> Int? {
+        let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // 16進数 (&Hxxxx形式)
+        if trimmed.uppercased().hasPrefix("&H") {
+            let hexPart = String(trimmed.dropFirst(2))
+            return Int(hexPart, radix: 16)
+        }
+        // 16進数 (0xXXXX形式)
+        else if trimmed.hasPrefix("0x") {
+            let hexPart = String(trimmed.dropFirst(2))
+            return Int(hexPart, radix: 16)
+        }
+        // 10進数
+        else {
+            return Int(trimmed)
+        }
+    }
+    
+    // D88ディスクからファイルを読み込む
+    private func loadFileFromD88(fileName: String) -> [UInt8]? {
+        guard let d88Data = d88Data else {
+            debug.appendLog("❗ D88ディスクがロードされていません")
+            return nil
+        }
+        
+        // D88ディスクオブジェクトを作成
+        guard let disk = D88Disk(data: d88Data) else {
+            debug.appendLog("❗ D88ディスクの解析に失敗しました")
+            return nil
+        }
+        
+        // ファイルの検索と読み込み
+        let fileData = disk.findAndLoadFile(fileName: fileName)
+        
+        if let data = fileData {
+            debug.appendLog("ファイル '\(fileName)' を読み込みました: \(data.count)バイト")
+            return data
+        } else {
+            debug.appendLog("❗ ファイル '\(fileName)' が見つかりませんでした")
+            return nil
         }
     }
     
@@ -1067,4 +1235,6 @@ class PC88Core: ObservableObject {
         debug.printZ80Status()
         debug.printPMD88WorkingAreaStatus()
     }
+    
+
 }

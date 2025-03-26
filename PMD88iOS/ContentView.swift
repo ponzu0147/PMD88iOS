@@ -399,6 +399,10 @@ struct ContentView: View {
                         }
                     }
                 
+                // PC88画面表示
+                PC88ScreenView()
+                    .padding(.vertical, 16)
+                
                 // コントロールパネル
                 ControlPanelView(
                     isPMDPlaying: $isPMDPlaying,

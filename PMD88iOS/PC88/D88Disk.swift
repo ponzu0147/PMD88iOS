@@ -303,4 +303,118 @@ class D88Disk {
         
         return files
     }
+    
+    // PC-8801のディスクファイルシステムからファイルを検索して読み込む
+    func findAndLoadFile(fileName: String) -> [UInt8]? {
+        // ファイル名を大文字に変換（PC-8801のファイル名は大文字）
+        let upperFileName = fileName.uppercased()
+        
+        // ファイル名の拡張子を分離
+        var baseName = upperFileName
+        var fileExtension = ""
+        
+        if let dotIndex = upperFileName.lastIndex(of: ".") {
+            baseName = String(upperFileName[..<dotIndex])
+            fileExtension = String(upperFileName[upperFileName.index(after: dotIndex)...])
+        }
+        
+        // ファイル名とエクステンションを8.3形式に調整
+        let fileNamePadded = baseName.padding(toLength: 8, withPad: " ", startingAt: 0)
+        let extensionPadded = fileExtension.padding(toLength: 3, withPad: " ", startingAt: 0)
+        
+        // ディレクトリエントリを探す
+        for trackIndex in 0..<trackCount {
+            guard let track = tracks[trackIndex] else { continue }
+            
+            // トラックのセクタを結合
+            var trackData: [UInt8] = []
+            for sector in track.sectors {
+                trackData.append(contentsOf: sector.data)
+            }
+            
+            // ディレクトリエントリを検索
+            for entryOffset in stride(from: 0, to: trackData.count, by: 32) {
+                if entryOffset + 32 > trackData.count { break }
+                
+                // ファイル属性をチェック（削除済みでないか）
+                let fileAttribute = trackData[entryOffset]
+                if fileAttribute == 0xFF { continue }  // 削除済みエントリ
+                
+                // ファイル名とエクステンションを取得
+                let entryFileName = String(bytes: trackData[entryOffset+1..<entryOffset+9], encoding: .ascii)?.trimmingCharacters(in: .controlCharacters) ?? ""
+                let entryExtension = String(bytes: trackData[entryOffset+9..<entryOffset+12], encoding: .ascii)?.trimmingCharacters(in: .controlCharacters) ?? ""
+                
+                // ファイル名とエクステンションが一致するか確認
+                if entryFileName == fileNamePadded && entryExtension == extensionPadded {
+                    // ファイルの先頭クラスタ番号
+                    let startCluster = Int(trackData[entryOffset+16]) | (Int(trackData[entryOffset+17]) << 8)
+                    
+                    // ファイルサイズ
+                    let fileSize = Int(trackData[entryOffset+18]) | 
+                                   (Int(trackData[entryOffset+19]) << 8) |
+                                   (Int(trackData[entryOffset+20]) << 16) |
+                                   (Int(trackData[entryOffset+21]) << 24)
+                    
+                    // ファイルデータを読み込む
+                    return loadFileData(startCluster: startCluster, fileSize: fileSize)
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    // 指定されたクラスタからファイルデータを読み込む
+    private func loadFileData(startCluster: Int, fileSize: Int) -> [UInt8]? {
+        var fileData: [UInt8] = []
+        var currentCluster = startCluster
+        
+        // FAT領域はトラック1のセクタ1-3に格納されていることが多い
+        guard let fatTrack = tracks[1], fatTrack.sectors.count >= 3 else { return nil }
+        
+        // FAT領域を結合
+        var fatData: [UInt8] = []
+        for sectorIndex in 0..<3 {
+            if sectorIndex < fatTrack.sectors.count {
+                fatData.append(contentsOf: fatTrack.sectors[sectorIndex].data)
+            }
+        }
+        
+        // データ領域はトラック1のセクタ4から始まることが多い
+        let dataTrackIndex = 1
+        let dataSectorIndex = 3
+        
+        // クラスタチェーンをたどる
+        while currentCluster >= 2 && currentCluster < 0xFF0 {
+            // クラスタのセクタを読み込む（1クラスタ = 1セクタと仮定）
+            let trackIndex = dataTrackIndex + (currentCluster / 8)
+            let sectorIndex = dataSectorIndex + (currentCluster % 8)
+            
+            if trackIndex < trackCount, let track = tracks[trackIndex], sectorIndex < track.sectors.count {
+                fileData.append(contentsOf: track.sectors[sectorIndex].data)
+                
+                // 次のクラスタを取得
+                let fatOffset = currentCluster * 2
+                if fatOffset + 1 < fatData.count {
+                    currentCluster = Int(fatData[fatOffset]) | (Int(fatData[fatOffset+1]) << 8)
+                } else {
+                    break
+                }
+            } else {
+                break
+            }
+            
+            // ファイルサイズに達したら終了
+            if fileData.count >= fileSize {
+                break
+            }
+        }
+        
+        // ファイルサイズに合わせてトリミング
+        if fileData.count > fileSize {
+            fileData = Array(fileData[0..<fileSize])
+        }
+        
+        return fileData
+    }
 }

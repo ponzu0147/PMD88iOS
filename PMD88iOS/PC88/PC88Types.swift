@@ -63,3 +63,59 @@ enum OPNARegister {
     // ADPCM関連
     static let adpcmControl = 0x00          // ADPCM制御レジスタ
 }
+
+// MARK: - PC88の画面モード
+enum ScreenMode: Int, Equatable, CaseIterable {
+    case text40x25 = 0     // 40列テキストモード
+    case text80x25 = 1     // 80列テキストモード
+    case graphics = 2      // グラフィックモード
+    
+    // 画面解像度を取得
+    var resolution: (width: Int, height: Int) {
+        switch self {
+        case .text40x25:
+            return (320, 400)  // インターレース表示を考慮して400ライン
+        case .text80x25:
+            return (640, 400)  // インターレース表示を考慮して400ライン
+        case .graphics:
+            return (640, 400)
+        }
+    }
+    
+    // 画面モードの説明文字列を取得
+    var description: String {
+        switch self {
+        case .text40x25:
+            return "40列テキストモード"
+        case .text80x25:
+            return "80列テキストモード"
+        case .graphics:
+            return "グラフィックモード"
+        }
+    }
+}
+
+// MARK: - PC88の画面表示関連の定数
+enum PC88ScreenConstants {
+    // VRAMアドレス
+    static let textVRAMAddr = 0xF000       // テキストVRAMの開始アドレス
+    static let graphicsVRAMAddr = 0xC000    // グラフィックVRAMの開始アドレス
+    
+    // 画面サイズ
+    static let textWidth = 80              // テキスト画面の幅
+    static let textHeight = 25             // テキスト画面の高さ
+    static let graphicsWidth = 640          // グラフィック画面の幅
+    static let graphicsHeight = 400         // グラフィック画面の高さ
+    
+    // カラーパレット
+    static let defaultPalette: [UInt32] = [
+        0xFF000000,  // 0: 黒
+        0xFF0000FF,  // 1: 青
+        0xFFFF0000,  // 2: 赤
+        0xFFFF00FF,  // 3: マゼンタ
+        0xFF00FF00,  // 4: 緑
+        0xFF00FFFF,  // 5: シアン
+        0xFFFFFF00,  // 6: 黄
+        0xFFFFFFFF   // 7: 白
+    ]
+}

@@ -87,6 +87,9 @@ public class Z80 {
     var portInHandler: ((UInt16) -> UInt8)? = nil
     var portOutHandler: ((UInt16, UInt8) -> Void)? = nil
     
+    // メモリ書き込みハンドラ
+    var memoryWriteHandler: ((UInt16, UInt8) -> Void)? = nil
+    
     // デバッグ関連
     var debugLog: [String] = []
     var debugMode: Bool = false
