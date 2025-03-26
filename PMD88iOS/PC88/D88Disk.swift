@@ -365,7 +365,90 @@ class D88Disk {
     }
     
     // 指定されたクラスタからファイルデータを読み込む
-    private func loadFileData(startCluster: Int, fileSize: Int) -> [UInt8]? {
+    // ファイルを名前で検索する
+    func findFile(fileName: String) -> (found: Bool, cluster: Int, size: Int) {
+        // ファイル名を大文字に変換（PC-8801のファイル名は大文字）
+        let upperFileName = fileName.uppercased()
+        
+        // ルートディレクトリを探索
+        for track in 1...39 {
+            for sector in 1...16 {
+                if let sectorData = readSector(track: track, sectorID: sector) {
+                    // ディレクトリエントリを検索
+                    for i in stride(from: 0, to: sectorData.count, by: 32) {
+                        if i + 32 <= sectorData.count {
+                            let entryName = String(bytes: Array(sectorData[i..<i+8]), encoding: .ascii)?.trimmingCharacters(in: .whitespaces) ?? ""
+                            let entryExt = String(bytes: Array(sectorData[i+8..<i+11]), encoding: .ascii)?.trimmingCharacters(in: .whitespaces) ?? ""
+                            let fullName = entryName + (entryExt.isEmpty ? "" : ".") + entryExt
+                            
+                            if fullName.uppercased() == upperFileName {
+                                let startCluster = Int(sectorData[i+26]) | (Int(sectorData[i+27]) << 8)
+                                let fileSize = Int(sectorData[i+28]) | (Int(sectorData[i+29]) << 8) | (Int(sectorData[i+30]) << 16) | (Int(sectorData[i+31]) << 24)
+                                return (true, startCluster, fileSize)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return (false, 0, 0)
+    }
+    
+    // 最初のファイルを検索する
+    func findFirstFile() -> (found: Bool, fileName: String, cluster: Int, size: Int) {
+        // ルートディレクトリの最初のセクタを読み込む
+        if let sectorData = readSector(track: 1, sectorID: 1) {
+            // 最初の有効なディレクトリエントリを検索
+            for i in stride(from: 0, to: sectorData.count, by: 32) {
+                if i + 32 <= sectorData.count && sectorData[i] != 0 && sectorData[i] != 0xE5 {
+                    let entryName = String(bytes: Array(sectorData[i..<i+8]), encoding: .ascii)?.trimmingCharacters(in: .whitespaces) ?? ""
+                    let entryExt = String(bytes: Array(sectorData[i+8..<i+11]), encoding: .ascii)?.trimmingCharacters(in: .whitespaces) ?? ""
+                    let fullName = entryName + (entryExt.isEmpty ? "" : ".") + entryExt
+                    
+                    let startCluster = Int(sectorData[i+26]) | (Int(sectorData[i+27]) << 8)
+                    let fileSize = Int(sectorData[i+28]) | (Int(sectorData[i+29]) << 8) | (Int(sectorData[i+30]) << 16) | (Int(sectorData[i+31]) << 24)
+                    
+                    return (true, fullName, startCluster, fileSize)
+                }
+            }
+        }
+        
+        return (false, "", 0, 0)
+    }
+    
+    // 次のファイルを検索する
+    func findNextFile() -> (found: Bool, fileName: String, cluster: Int, size: Int) {
+        // 現在の検索位置から次のファイルを検索
+        // 実際の実装ではDTAなどの情報を使用して検索位置を管理する必要があります
+        // ここでは簡易的な実装
+        
+        // ルートディレクトリの次のセクタを読み込む
+        if let sectorData = readSector(track: 1, sectorID: 2) {
+            // 最初の有効なディレクトリエントリを検索
+            for i in stride(from: 0, to: sectorData.count, by: 32) {
+                if i + 32 <= sectorData.count && sectorData[i] != 0 && sectorData[i] != 0xE5 {
+                    let entryName = String(bytes: Array(sectorData[i..<i+8]), encoding: .ascii)?.trimmingCharacters(in: .whitespaces) ?? ""
+                    let entryExt = String(bytes: Array(sectorData[i+8..<i+11]), encoding: .ascii)?.trimmingCharacters(in: .whitespaces) ?? ""
+                    let fullName = entryName + (entryExt.isEmpty ? "" : ".") + entryExt
+                    
+                    let startCluster = Int(sectorData[i+26]) | (Int(sectorData[i+27]) << 8)
+                    let fileSize = Int(sectorData[i+28]) | (Int(sectorData[i+29]) << 8) | (Int(sectorData[i+30]) << 16) | (Int(sectorData[i+31]) << 24)
+                    
+                    return (true, fullName, startCluster, fileSize)
+                }
+            }
+        }
+        
+        return (false, "", 0, 0)
+    }
+    
+    // クラスタからファイルデータをロードする
+    func loadFileDataFromCluster(cluster: Int, size: Int) -> [UInt8]? {
+        return loadFileData(startCluster: cluster, fileSize: size)
+    }
+    
+    internal func loadFileData(startCluster: Int, fileSize: Int) -> [UInt8]? {
         var fileData: [UInt8] = []
         var currentCluster = startCluster
         

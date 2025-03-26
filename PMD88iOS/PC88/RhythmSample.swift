@@ -59,6 +59,7 @@ class RhythmSampleManager {
     }
     
     /// バンドルからリズム音色サンプルを読み込む
+    @discardableResult
     func loadSamplesFromBundle() -> Bool {
         var success = true
         let rhythmFiles = ["2608_bd", "2608_sd", "2608_top", "2608_hh", "2608_tom", "2608_rim"]

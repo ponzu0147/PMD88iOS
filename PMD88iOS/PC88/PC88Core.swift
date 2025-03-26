@@ -991,14 +991,45 @@ class PC88Core: ObservableObject {
             return true
             
         case 0x04:  // コンソール出力
-            let char = cpu.c
-            debug.appendLog("BIOS: コンソール出力 - 文字: \(char) (\(String(format: "%c", char)))")
-            return true
+            let charCode = cpu.e
+            debug.appendLog("BIOS: コンソール出力 - 文字: \(charCode) (\(String(format: "%c", charCode)))")
+            
+            // PC88BIOSクラスに処理を委託
+            let bios = PC88BIOS()
+            return bios.handleConsoleOut(cpu: cpu, screen: screen)
             
         case 0x05:  // プリンタ出力
             // プリンタ出力は無視
             cpu.a = 0x00  // エラーなし
             return true
+            
+        case 0x09:  // 文字列出力
+            debug.appendLog("BIOS: 文字列出力")
+            
+            // PC88BIOSクラスに処理を委託
+            let bios = PC88BIOS()
+            return bios.handlePrintString(cpu: cpu, screen: screen)
+            
+        case 0x43:  // カーソル位置設定
+            debug.appendLog("BIOS: カーソル位置設定 - X:\(cpu.d) Y:\(cpu.e)")
+            
+            // PC88BIOSクラスに処理を委託
+            let bios = PC88BIOS()
+            return bios.handleSetCursorPosition(cpu: cpu, screen: screen)
+            
+        case 0x44:  // カーソル位置取得
+            debug.appendLog("BIOS: カーソル位置取得")
+            
+            // PC88BIOSクラスに処理を委託
+            let bios = PC88BIOS()
+            return bios.handleGetCursorPosition(cpu: cpu, screen: screen)
+            
+        case 0x45:  // 画面クリア
+            debug.appendLog("BIOS: 画面クリア")
+            
+            // PC88BIOSクラスに処理を委託
+            let bios = PC88BIOS()
+            return bios.handleClearScreen(cpu: cpu, screen: screen)
             
         case 0x06:  // 補助入力
             // 補助入力は常に0を返す（入力なし）
@@ -1027,7 +1058,7 @@ class PC88Core: ObservableObject {
             debug.appendLog("BIOS: 文字列出力 - \(output)")
             return true
             
-        case 0x09:  // コンソールステータス確認
+        case 0x0C:  // コンソールステータス確認
             // 常に入力準備完了を返す
             cpu.a = 0xFF
             return true
