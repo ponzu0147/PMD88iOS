@@ -174,17 +174,13 @@ class FMEngine {
         let feedback = (algFB >> 3) & 0x07
         
         // アルゴリズムに基づいて波形を生成（簡略化）
+        // アルゴリズムに基づいて波形を生成（簡略化）
         // 実際のFM合成はもっと複雑ですが、簡略化のため単純な正弦波で実装
         let waveform = sin(2.0 * Float.pi * phase)
         
         // フィードバック量に応じて波形を歪ませる（簡略化）
         let feedbackAmount = Float(feedback) / 7.0
         if feedbackAmount > 0 {
-            return waveform * (1.0 + feedbackAmount * 0.2 * sin(4.0 * Float.pi * phase))
-        } else {
-            return waveform
-        }
-    }
     
     // エンベロープ計算
     private func calculateEnvelope(_ ch: Int) -> Float {
