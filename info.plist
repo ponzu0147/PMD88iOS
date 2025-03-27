@@ -49,7 +49,16 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<!-- ファイルアクセス権限の追加 -->
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>UISupportsDocumentBrowser</key>
+	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>D88ファイルを読み込むためにファイルアクセスが必要です</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>このアプリはエミュレーションの音声出力に使用します</string>
 </dict>
-</plist> 
+</plist>
