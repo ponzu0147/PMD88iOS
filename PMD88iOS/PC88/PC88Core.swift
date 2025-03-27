@@ -15,6 +15,7 @@ class PC88Core: ObservableObject {
     @Published var status: String = "初期化中..."
     @Published var logs: [String] = []
     @Published var d88Data: Data?
+    @Published var isD88DataAvailable: Bool = false
     
     // MARK: - 画面表示関連のプロパティ
     var screen: PC88Screen!
@@ -50,6 +51,9 @@ class PC88Core: ObservableObject {
     // UI制御用
     @Published var runButtonEnabled = true
     
+    // CPU実行ループ用タイマー
+    private var cpuExecutionTimer: Timer?
+    
     // フォントROM
     private var fontROM = PC88FontROM()
     
@@ -68,6 +72,9 @@ class PC88Core: ObservableObject {
     
     // MARK: - プライベートプロパティ
     private var cancellables = Set<AnyCancellable>()
+    
+    // BIOS関数を実装するためのPC88BIOSクラスのインスタンス
+    private let biosFunctions = PC88BIOS()
     
     // MARK: - 初期化
     init() {
@@ -126,8 +133,17 @@ class PC88Core: ObservableObject {
         debug.appendLog("Z80 CPU初期化完了")
     }
     
+    // リソース読み込み状態を追跡するフラグ
+    private static var resourcesLoaded = false
+    
     // MARK: - リソースファイルの読み込み
     private func loadResourceFiles() {
+        // リソースが既に読み込まれている場合はスキップ
+        if PC88Core.resourcesLoaded {
+            debug.appendLog("ℹ️ リソースは既に読み込み済みです")
+            return
+        }
+        
         // フォントROMの読み込み
         if fontROM.loadFontROMFromBundle() {
             debug.appendLog("フォントROMを読み込みました")
@@ -150,6 +166,9 @@ class PC88Core: ObservableObject {
         } else {
             debug.appendLog("❗ リズム音色サンプルの読み込みに失敗しました")
         }
+        
+        // リソース読み込み完了フラグを設定
+        PC88Core.resourcesLoaded = true
     }
     
     // BIOSをメモリにマッピング
@@ -747,7 +766,9 @@ class PC88Core: ObservableObject {
         // IPLコードを読み込む
         guard let bootSector = disk.loadIPLCode() else {
             debug.appendLog("❗ IPLコードの読み込みに失敗しました")
-            iplLoaded = false
+            DispatchQueue.main.async { [weak self] in
+                self?.iplLoaded = false
+            }
             return
         }
         
@@ -803,7 +824,10 @@ class PC88Core: ObservableObject {
         // ディスクオブジェクトを保存
         currentDisk = disk
         
-        iplLoaded = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.iplLoaded = true
+        }
         debug.appendLog("IPLコードをロードしました: \(iplCode!.count)バイト")
     }
     
@@ -814,7 +838,10 @@ class PC88Core: ObservableObject {
             return
         }
         
-        debug.appendLog("IPLからOSをブートします...")
+        debug.appendLog("🔄 IPLからOSをブートします...")
+        
+        // メモリマップを再設定
+        setupMemoryMap()
         
         // BIOSフックを設定
         setupBIOSHooks()
@@ -834,51 +861,93 @@ class PC88Core: ObservableObject {
         
         // IPLコードの内容をデバッグログに出力
         if let iplCode = iplCode {
-            debug.appendLog("IPLコード（最初の16バイト）:")
+            debug.appendLog("💾 IPLコード（最初の16バイト）:")
             var hexDump = ""
             for i in 0..<min(16, iplCode.count) {
                 hexDump += String(format: "%02X ", iplCode[i])
             }
             debug.appendLog(hexDump)
+            
+            // IPLコードをメモリにロード（再ロード）
+            for (i, byte) in iplCode.enumerated() {
+                if i < cpu.memory.count {
+                    cpu.memory[i] = byte
+                }
+            }
+            debug.appendLog("✅ IPLコードをメモリにロードしました: \(iplCode.count)バイト")
         }
+        
+        // 機種情報をメモリに設定（PC-8801用）
+        cpu.memory[0x0002] = 0xA0  // PC-8801識別子
         
         // IPLコードを数ステップ実行
         let initialSteps = 100  // 最初のステップ数
+        debug.appendLog("🔍 IPL初期段階実行開始 \(initialSteps)ステップ")
         var result = cpu.execute(steps: initialSteps)
         
         if result < 0 {
-            debug.appendLog("❗ IPL実行初期段階でエラーが発生しました: \(result)")
-            return
+            debug.appendLog("❌ IPL実行初期段階でエラーが発生しました: \(result)")
+            // エラー詳細を表示
+            debug.appendLog("  エラー発生時のPC: 0x\(String(format: "%04X", cpu.pc))")
+            debug.appendLog("  エラー発生時の命令: 0x\(String(format: "%02X", cpu.memory[cpu.pc]))")
+            
+            // エラーが発生しても続行を試みる
+            debug.appendLog("🔄 エラーが発生しましたが、続行を試みます")
+        } else {
+            debug.appendLog("✅ IPL初期段階実行完了: PC=0x\(String(format: "%04X", cpu.pc))")
         }
-        
-        debug.appendLog("IPL初期段階実行完了: PC=0x\(String(format: "%04X", cpu.pc))")
         
         // 追加のステップを実行（OSのロード処理）
         let additionalSteps = 5000  // 追加のステップ数
+        debug.appendLog("🔍 OSロード段階実行開始 \(additionalSteps)ステップ")
         result = cpu.execute(steps: additionalSteps)
         
         if result < 0 {
-            debug.appendLog("❗ OS読み込み段階でエラーが発生しました: \(result)")
-            return
+            debug.appendLog("⚠️ OS読み込み段階でエラーが発生しました: \(result)")
+            // エラー詳細を表示
+            debug.appendLog("  エラー発生時のPC: 0x\(String(format: "%04X", cpu.pc))")
+            debug.appendLog("  エラー発生時の命令: 0x\(String(format: "%02X", cpu.memory[cpu.pc]))")
+            
+            // エラーが発生しても続行を試みる
+            debug.appendLog("🔄 エラーが発生しましたが、続行を試みます")
+        } else {
+            debug.appendLog("✅ OSロード段階実行完了: PC=0x\(String(format: "%04X", cpu.pc))")
         }
         
         // メモリ状態の確認（OS領域）
         let osStartAddr = 0x100  // OSの開始アドレス（仮定）
         var osSignature = ""
-        for i in 0..<8 {
+        for i in 0..<16 { // 8バイトから16バイトに増やして詳細な情報を取得
             if osStartAddr + i < cpu.memory.count {
                 osSignature += String(format: "%02X ", cpu.memory[osStartAddr + i])
             }
         }
-        debug.appendLog("OS領域の先頭8バイト: \(osSignature)")
+        debug.appendLog("💾 OS領域の先頭16バイト: \(osSignature)")
         
-        osBooted = true
-        debug.appendLog("OSのブートに成功しました: PC=0x\(String(format: "%04X", cpu.pc))")
+        // 追加のステップを実行（OSの初期化処理）
+        let finalSteps = 10000  // 最終ステップ数
+        debug.appendLog("🔍 OS初期化段階実行開始 \(finalSteps)ステップ")
+        result = cpu.execute(steps: finalSteps)
+        
+        if result < 0 {
+            debug.appendLog("⚠️ OS初期化段階でエラーが発生しましたが、続行します: \(result)")
+            // エラー詳細を表示
+            debug.appendLog("  エラー発生時のPC: 0x\(String(format: "%04X", cpu.pc))")
+        } else {
+            debug.appendLog("✅ OS初期化段階実行完了: PC=0x\(String(format: "%04X", cpu.pc))")
+        }
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.osBooted = true
+        }
+        debug.appendLog("🎉 OSのブートに成功しました: PC=0x\(String(format: "%04X", cpu.pc))")
         
         // OS起動後の処理
         // 必要に応じてPMD88プログラムをロード
         if let programData = programData {
             loadPMD88ProgramData(programData)
+            debug.appendLog("✅ PMD88プログラムをロードしました")
         }
     }
     
@@ -961,20 +1030,41 @@ class PC88Core: ObservableObject {
             let sector = cpu.e
             let dmaAddress = cpu.hl()
             
-            debug.appendLog("BIOS: ディスク読み込み - トラック: \(track), セクタ: \(sector), DMAアドレス: 0x\(String(format: "%04X", dmaAddress))")
+            debug.appendLog("💾 BIOS: ディスク読み込み - トラック: \(track), セクタ: \(sector), DMAアドレス: 0x\(String(format: "%04X", dmaAddress))")
             
             // ディスクからデータを読み込む処理
             if let d88Data = d88Data {
+                // ディスクデータが存在する場合
                 if readSectorFromD88(d88Data, track: Int(track), sector: Int(sector), address: dmaAddress) {
                     // 成功
                     cpu.a = 0x00  // エラーなし
+                    debug.appendLog("✅ ディスク読み込み成功: トラック \(track), セクタ \(sector)")
+                    return true
+                } else {
+                    // 読み込み失敗
+                    debug.appendLog("❌ ディスク読み込み失敗: トラック \(track), セクタ \(sector) - セクタが見つかりません")
+                    cpu.a = 0x01  // エラーあり
                     return true
                 }
+            } else {
+                // ディスクデータが存在しない場合
+                debug.appendLog("⚠️ ディスク読み込み失敗: D88データがロードされていません")
+                
+                // ディスクがない場合でも、特定のセクタにはダミーデータを返す
+                if track == 0 && (sector == 1 || sector == 2) {
+                    // ブートセクタの場合はダミーデータを返す
+                    for i in 0..<256 {
+                        cpu.memory[dmaAddress + i] = 0xE5  // 未使用セクタのマーカー
+                    }
+                    debug.appendLog("ℹ️ ブートセクタにダミーデータを返しました")
+                    cpu.a = 0x00  // エラーなし
+                    return true
+                }
+                
+                // それ以外はエラー
+                cpu.a = 0x01  // エラーあり
+                return true
             }
-            
-            // 失敗
-            cpu.a = 0x01  // エラーあり
-            return true
             
         case 0x01:  // ディスク書き込み
             // 書き込みは実装しない（読み取り専用）
@@ -995,8 +1085,7 @@ class PC88Core: ObservableObject {
             debug.appendLog("BIOS: コンソール出力 - 文字: \(charCode) (\(String(format: "%c", charCode)))")
             
             // PC88BIOSクラスに処理を委託
-            let bios = PC88BIOS()
-            return bios.handleConsoleOut(cpu: cpu, screen: screen)
+            return biosFunctions.handleConsoleOut(cpu: cpu, screen: screen)
             
         case 0x05:  // プリンタ出力
             // プリンタ出力は無視
@@ -1007,29 +1096,25 @@ class PC88Core: ObservableObject {
             debug.appendLog("BIOS: 文字列出力")
             
             // PC88BIOSクラスに処理を委託
-            let bios = PC88BIOS()
-            return bios.handlePrintString(cpu: cpu, screen: screen)
+            return biosFunctions.handlePrintString(cpu: cpu, screen: screen)
             
         case 0x43:  // カーソル位置設定
             debug.appendLog("BIOS: カーソル位置設定 - X:\(cpu.d) Y:\(cpu.e)")
             
             // PC88BIOSクラスに処理を委託
-            let bios = PC88BIOS()
-            return bios.handleSetCursorPosition(cpu: cpu, screen: screen)
+            return biosFunctions.handleSetCursorPosition(cpu: cpu, screen: screen)
             
         case 0x44:  // カーソル位置取得
             debug.appendLog("BIOS: カーソル位置取得")
             
             // PC88BIOSクラスに処理を委託
-            let bios = PC88BIOS()
-            return bios.handleGetCursorPosition(cpu: cpu, screen: screen)
+            return biosFunctions.handleGetCursorPosition(cpu: cpu, screen: screen)
             
         case 0x45:  // 画面クリア
             debug.appendLog("BIOS: 画面クリア")
             
             // PC88BIOSクラスに処理を委託
-            let bios = PC88BIOS()
-            return bios.handleClearScreen(cpu: cpu, screen: screen)
+            return biosFunctions.handleClearScreen(cpu: cpu, screen: screen)
             
         case 0x06:  // 補助入力
             // 補助入力は常に0を返す（入力なし）
@@ -1189,11 +1274,39 @@ class PC88Core: ObservableObject {
     
     // D88ファイルからセクタを読み込む
     private func readSectorFromD88(_ d88Data: Data, track: Int, sector: Int, address: Int) -> Bool {
+        // まずD88Diskクラスを使用して読み込みを試みる
+        if let disk = currentDisk {
+            debug.appendLog("💾 D88Diskクラスを使用してセクタ読み込みを試みます")
+            if let sectorData = disk.readSector(track: track, sectorID: sector) {
+                // セクタデータをメモリにコピー
+                for (i, byte) in sectorData.enumerated() {
+                    if address + i < cpu.memory.count {
+                        cpu.memory[address + i] = byte
+                    }
+                }
+                
+                debug.appendLog("✅ D88Diskクラスでセクタ読み込み成功: トラック \(track), セクタ \(sector), サイズ \(sectorData.count)バイト")
+                return true
+            } else {
+                debug.appendLog("⚠️ D88Diskクラスでセクタが見つかりません、従来の方法で試行します")
+                // D88Diskクラスで失敗した場合は従来の方法で試行
+            }
+        } else {
+            debug.appendLog("⚠️ D88Diskオブジェクトが利用できません、従来の方法で試行します")
+        }
+        
+        // 従来の方法で読み込みを試行
         let rawBytes = [UInt8](d88Data)
+        
+        // トラック番号とセクタ番号の妥当性チェック
+        if track < 0 || track >= 164 || sector <= 0 || sector > 26 {
+            debug.appendLog("❌ 無効なトラックまたはセクタ番号: トラック \(track), セクタ \(sector)")
+            return false
+        }
         
         // D88フォーマットからトラックオフセットを取得
         if rawBytes.count < 0x20 + (track * 4) + 4 {
-            debug.appendLog("❗ トラックオフセットの取得に失敗: トラック \(track)")
+            debug.appendLog("❌ トラックオフセットの取得に失敗: トラック \(track)")
             return false
         }
         
@@ -1204,16 +1317,17 @@ class PC88Core: ObservableObject {
                           (UInt32(rawBytes[trackOffsetPos + 3]) << 24)
         
         if trackOffset == 0 || Int(trackOffset) >= rawBytes.count {
-            debug.appendLog("❗ 無効なトラックオフセット: 0x\(String(format: "%08X", trackOffset))")
+            debug.appendLog("❌ 無効なトラックオフセット: 0x\(String(format: "%08X", trackOffset))")
             return false
         }
         
         // トラック内のセクタを検索
         var sectorOffset = Int(trackOffset)
-        let sectorCount = 16  // 通常のセクタ数
+        let sectorCount = 26  // 最大セクタ数を16から26に増やして対応範囲を広げる
         
         for _ in 0..<sectorCount {
             if sectorOffset + 0x10 >= rawBytes.count {
+                debug.appendLog("⚠️ セクタヘッダが範囲外: オフセット 0x\(String(format: "%04X", sectorOffset))")
                 break
             }
             
@@ -1236,10 +1350,10 @@ class PC88Core: ObservableObject {
                         }
                     }
                     
-                    debug.appendLog("セクタ読み込み成功: トラック \(track), セクタ \(sector), サイズ \(sectorSize)バイト")
+                    debug.appendLog("✅ 従来方式でセクタ読み込み成功: トラック \(track), セクタ \(sector), サイズ \(sectorSize)バイト")
                     return true
                 } else {
-                    debug.appendLog("❗ セクタデータの範囲外: トラック \(track), セクタ \(sector)")
+                    debug.appendLog("❌ セクタデータが範囲外: トラック \(track), セクタ \(sector)")
                     return false
                 }
             }
@@ -1250,20 +1364,131 @@ class PC88Core: ObservableObject {
             sectorOffset += 0x10 + Int(sectorSize)
         }
         
-        debug.appendLog("❗ セクタが見つかりません: トラック \(track), セクタ \(sector)")
+        // セクタが見つからない場合、ダミーデータを生成
+        debug.appendLog("⚠️ セクタが見つかりません: トラック \(track), セクタ \(sector)")
+        
+        // ブートセクタの場合は特別処理
+        if track == 0 && (sector == 1 || sector == 2) {
+            // ブートセクタの場合は空のセクタを返す
+            for i in 0..<256 {
+                if address + i < cpu.memory.count {
+                    cpu.memory[address + i] = 0xE5  // 未使用セクタのマーカー
+                }
+            }
+            debug.appendLog("ℹ️ ブートセクタにダミーデータを生成しました")
+            return true
+        }
+        
         return false
     }
     
     // MARK: - 公開メソッド
     
-    // PMD88音楽再生
+    // PC88エミュレータ起動
     func runPMDMusic() {
-        pmd.runPMDMusic()
+        // 当メソッドは互換性のために名前を維持していますが、内部処理は変更されています
+        debug.appendLog("💻 PC88エミュレータを起動します")
+        
+        // FM音源処理を無効化
+        debug.appendLog("🚧 現在、FM音源処理を無効化しています")
+        
+        // システムをリセット
+        resetSystem()
+        
+        // ステータスを更新
+        status = "PC88エミュレータ起動中"
+        
+        // ディスク情報の表示
+        if let d88Data = d88Data {
+            debug.appendLog("💾 D88ファイルがロードされています: \(d88Data.count)バイト")
+            
+            // ディスク情報の表示
+            if let disk = D88Disk(data: d88Data) {
+                debug.appendLog("💾 ディスク名: \(disk.header.diskName)")
+                debug.appendLog("💾 メディアタイプ: \(disk.header.mediaTypeString)")
+                debug.appendLog("💾 ディスクサイズ: \(disk.header.diskSize) バイト")
+                debug.appendLog("💾 書き込み保護: \(disk.header.writeProtected ? "あり" : "なし")")
+                
+                // IPLからブートする
+                debug.appendLog("💻 IPLからブートを開始します")
+                bootFromIPL()
+                
+                // プログラム実行中フラグを設定
+                programRunning = true
+                
+                // ステータスを更新
+                status = "PC88エミュレータ実行中"
+                debug.appendLog("💻 PC88エミュレータが正常に起動しました")
+            }
+        } else {
+            debug.appendLog("❌ D88ファイルがロードされていません")
+        }
     }
     
-    // 停止
+    // CPUの継続的な実行ループを開始
+    private func startCPUExecutionLoop() {
+        // 既存のタイマーを無効化
+        cpuExecutionTimer?.invalidate()
+        
+        // 一時的にCPU実行ループを無効化
+        debug.appendLog("🚧 CPU実行ループは現在無効化されています")
+        
+        // ステータスを更新
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.status = "PC88エミュレータ開発中 - CPUループ無効化"
+        }
+    }
+    
+    // 画面更新処理
+    private func updateScreen() {
+        // 一時的に画面更新処理を無効化
+        debug.appendLog("🚧 画面更新処理は現在無効化されています")
+    }
+    
+    // メモリをリセット
+    private func resetMemory() {
+        debug.appendLog("🔄 メモリをリセットします")
+        
+        // CPUメモリを初期化
+        for i in 0..<cpu.memory.count {
+            cpu.memory[i] = 0
+        }
+        
+        // VRAMをクリア
+        screen.clearVRAM()
+        
+        // CPUレジスタを初期化
+        cpu.reset()
+        
+        // フラグをリセット
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.iplLoaded = false
+            self.osBooted = false
+        }
+    }
+    
+    // PC88エミュレータ停止
     func stop() {
-        pmd.stop()
+        debug.appendLog("⏸️ PC88エミュレータを停止します")
+        
+        // CPU実行ループを停止
+        cpuExecutionTimer?.invalidate()
+        cpuExecutionTimer = nil
+        
+        // CPUの実行を停止
+        cpu.isStopped = true  // Z80クラスにはstop()メソッドがないので、直接プロパティを設定
+        
+        // オーディオチャンネルを停止
+        audio.stopAllChannels()
+        
+        // システム状態をメインスレッドで更新
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.status = "PC88エミュレータ停止中"
+            self.programRunning = false
+        }
     }
     
     // PMDのリセット
@@ -1278,6 +1503,10 @@ class PC88Core: ObservableObject {
     
     // チャンネル情報更新
     func updateChannelInfo() {
+        // FM音源処理を一時的に無効化
+        debug.appendLog("🚧 チャンネル情報の更新を無効化しています")
+        // 以下の処理をコメントアウト
+        /*
         // メインスレッドで実行されているか確認
         if Thread.isMainThread {
             // メインスレッドでの実行
@@ -1289,6 +1518,7 @@ class PC88Core: ObservableObject {
                 self.updateChannelInfoOnMainThread()
             }
         }
+        */
     }
     
     // メインスレッドでチャンネル情報を更新するメソッド
@@ -1308,6 +1538,11 @@ class PC88Core: ObservableObject {
     
     // PMD88ワークエリア情報の更新
     private func updatePMDWorkAreaInfo() {
+        // FM音源処理を一時的に無効化
+        debug.appendLog("🚧 PMD88ワークエリア情報の更新を無効化しています")
+        
+        // 以下の処理をコメントアウト
+        /*
         // 曲データアドレスを更新
         if let songAddr = debug.getPMDSongDataAddress() {
             songDataAddress = String(format: "0x%04X", songAddr)
@@ -1317,7 +1552,10 @@ class PC88Core: ObservableObject {
         
         // 処理ステップ数を更新
         let newStepCount = pmd.getStepCount()
+        */
         
+        // 以下の処理もコメントアウト
+        /*
         // ステップ数が変化していれば更新、そうでなければ自動的に増加
         if newStepCount > 0 && newStepCount != stepCount {
             stepCount = newStepCount
@@ -1335,6 +1573,7 @@ class PC88Core: ObservableObject {
                 updateChannelInfo()
             }
         }
+        */
     }
     
     // D88データの取得

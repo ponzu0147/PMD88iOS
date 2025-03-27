@@ -566,4 +566,122 @@ class D88Disk {
         
         return true
     }
+    
+    /// ディスクの詳細情報を解析して返す
+    /// - Returns: ディスク情報を格納した辞書
+    func analyzeDetailedInfo() -> [String: String] {
+        var info: [String: String] = [:]
+        
+        // ディスク名
+        info["diskName"] = header.diskName
+        
+        // 書き込み保護
+        info["writeProtected"] = header.writeProtected ? "あり" : "なし"
+        
+        // メディアタイプ
+        info["mediaType"] = header.mediaTypeString
+        
+        // ディスクサイズ
+        info["diskSize"] = "\(header.diskSize) バイト"
+        
+        // トラック数
+        info["trackCount"] = "\(trackCount)"
+        
+        // 最大セクタ数
+        info["maxSectors"] = "\(maxSectors)"
+        
+        return info
+    }
+    
+    /// IPL領域とOS領域を特定する
+    /// - Returns: システム領域の情報を格納した辞書
+    func locateSystemAreas() -> [String: Any] {
+        var result: [String: Any] = [:]
+        
+        // IPLコードのチェック
+        if let iplCode = loadIPLCode() {
+            result["iplFound"] = true
+            result["iplSize"] = iplCode.count
+            
+            // IPLの特徴的なバイトパターンをチェック
+            if iplCode.count >= 10 {
+                // 一般的なPC-88のIPLは特定のジャンプ命令で始まる
+                let isStandardIPL = (iplCode[0] == 0xC3) // JMP命令
+                result["isStandardIPL"] = isStandardIPL
+            }
+        } else {
+            result["iplFound"] = false
+        }
+        
+        // OS領域の探索
+        // 通常、OSはトラック0の後半からトラック1にかけて格納されている
+        var osData: [UInt8] = []
+        
+        // トラック0の後半のセクタを収集
+        if let track0 = tracks[0], track0.sectors.count > 1 {
+            for i in 1..<track0.sectors.count {
+                osData.append(contentsOf: track0.sectors[i].data)
+            }
+        }
+        
+        // トラック1のセクタを収集
+        if tracks.count > 1, let track1 = tracks[1] {
+            for sector in track1.sectors {
+                osData.append(contentsOf: sector.data)
+            }
+        }
+        
+        result["osDataSize"] = osData.count
+        
+        // OSの特定によく使われる文字列を探索
+        let osSignatures: [[UInt8]] = [
+            [0x50, 0x43, 0x2D, 0x38, 0x38], // "PC-88"
+            [0x4E, 0x38, 0x38, 0x2D, 0x42, 0x41, 0x53, 0x49, 0x43], // "N88-BASIC"
+            [0x44, 0x49, 0x53, 0x4B, 0x20, 0x42, 0x41, 0x53, 0x49, 0x43] // "DISK BASIC"
+        ]
+        
+        var foundSignatures: [String] = []
+        
+        for signature in osSignatures {
+            if searchForSignature(in: osData, signature: signature) {
+                let sigString = String(bytes: signature, encoding: .ascii) ?? "不明"
+                foundSignatures.append(sigString)
+            }
+        }
+        
+        result["osSignatures"] = foundSignatures
+        
+        // PMD88シグネチャの探索
+        let pmdSignature: [UInt8] = [0x50, 0x4D, 0x44, 0x38, 0x38] // "PMD88"のASCIIコード
+        let pmdFound = searchForSignature(in: rawData, signature: pmdSignature)
+        result["pmdFound"] = pmdFound
+        
+        if pmdFound {
+            // PMD88の典型的なメモリアドレスを設定
+            result["songDataAddress"] = 0x4C00
+            result["voiceDataAddress"] = 0x6000
+        }
+        
+        return result
+    }
+    
+    /// データ内に特定のシグネチャが存在するか探索
+    /// - Parameters:
+    ///   - data: 探索対象のデータ
+    ///   - signature: 探索するシグネチャ
+    /// - Returns: シグネチャが見つかった場合はtrue
+    private func searchForSignature(in data: [UInt8], signature: [UInt8]) -> Bool {
+        guard data.count >= signature.count else { return false }
+        
+        for i in 0...(data.count - signature.count) {
+            let range = i..<(i + signature.count)
+            let slice = data[range]
+            
+            if slice.elementsEqual(signature) {
+                return true
+            }
+        }
+        
+        return false
+    }
 }

@@ -504,57 +504,93 @@ struct ContentView: View {
         
         pc88.appendLog("D88データの解析を開始します...")
         
-        // D88ファイルのヘッダー情報を解析
-        if data.count >= 0x20 { // 最低限のヘッダーサイズ
-            let diskName = String(data: data[0..<16], encoding: .ascii)?.trimmingCharacters(in: .controlCharacters) ?? "不明"
-            let writeProtected = data[0x1A] > 0 ? "あり" : "なし"
-            let diskType = data[0x1B]
-            let diskSize = data[0x1C...0x1F].withUnsafeBytes { $0.load(as: UInt32.self) }
+        // D88Diskオブジェクトを作成して詳細な解析を行う
+        if let d88Disk = D88Disk(data: data) {
+            // ディスクの詳細情報を取得
+            let diskInfo = d88Disk.analyzeDetailedInfo()
             
             pc88.appendLog("===== D88ファイル情報 =====")
-            pc88.appendLog("ディスク名: \(diskName)")
-            pc88.appendLog("書き込み保護: \(writeProtected)")
-            pc88.appendLog("ディスクタイプ: \(diskType)")
-            pc88.appendLog("ディスクサイズ: \(diskSize) バイト")
+            pc88.appendLog("ディスク名: \(diskInfo["diskName"] ?? "不明")")
+            pc88.appendLog("書き込み保護: \(diskInfo["writeProtected"] ?? "不明")")
+            pc88.appendLog("メディアタイプ: \(diskInfo["mediaType"] ?? "不明")")
+            pc88.appendLog("ディスクサイズ: \(diskInfo["diskSize"] ?? "不明")")
+            pc88.appendLog("トラック数: \(diskInfo["trackCount"] ?? "不明")")
+            pc88.appendLog("最大セクタ数: \(diskInfo["maxSectors"] ?? "不明")")
             
-            // PMD88関連のデータを探索
+            // IPLとOS領域の解析
+            pc88.appendLog("\n===== システム領域解析 =====")
+            let systemInfo = d88Disk.locateSystemAreas()
+            
+            // IPL情報の表示
+            if let iplFound = systemInfo["iplFound"] as? Bool, iplFound {
+                pc88.appendLog("IPLコード: 発見")
+                if let iplSize = systemInfo["iplSize"] as? Int {
+                    pc88.appendLog("IPLサイズ: \(iplSize) バイト")
+                }
+                if let isStandardIPL = systemInfo["isStandardIPL"] as? Bool {
+                    pc88.appendLog("標準IPL: \(isStandardIPL ? "はい" : "いいえ")")
+                }
+            } else {
+                pc88.appendLog("IPLコード: 見つかりません")
+            }
+            
+            // OS領域情報の表示
+            if let osDataSize = systemInfo["osDataSize"] as? Int {
+                pc88.appendLog("OS領域サイズ: \(osDataSize) バイト")
+            }
+            
+            if let osSignatures = systemInfo["osSignatures"] as? [String], !osSignatures.isEmpty {
+                pc88.appendLog("検出されたOS署名: \(osSignatures.joined(separator: ", "))")
+            } else {
+                pc88.appendLog("OS署名: 見つかりません")
+            }
+            
+            // PMD88関連の解析
             pc88.appendLog("\n===== PMD88データ探索 =====")
-            
-            // PMD88のプログラムデータを検索
-            let pmdSignature: [UInt8] = [0x50, 0x4D, 0x44, 0x38, 0x38] // "PMD88"のASCIIコード
-            var foundPMD = false
-            
-            for i in 0..<(data.count - pmdSignature.count) {
-                let range = i..<(i + pmdSignature.count)
-                let bytes = [UInt8](data[range])
+            if let pmdFound = systemInfo["pmdFound"] as? Bool, pmdFound {
+                pc88.appendLog("PMD88シグネチャ: 発見")
                 
-                if bytes == pmdSignature {
-                    foundPMD = true
-                    pc88.appendLog("PMD88シグネチャを発見: オフセット 0x\(String(format: "%X", i))")
-                    break
+                // 曲データと音色データの位置を設定
+                if let songDataAddress = systemInfo["songDataAddress"] as? Int,
+                   let voiceDataAddress = systemInfo["voiceDataAddress"] as? Int {
+                    pc88.appendLog("曲データと音色データの位置を設定しています...")
+                    
+                    // 曲データアドレスを設定
+                    pc88.cpu.writeMemory(at: songDataAddress, value: UInt8(songDataAddress & 0xFF))
+                    pc88.cpu.writeMemory(at: songDataAddress + 1, value: UInt8((songDataAddress >> 8) & 0xFF))
+                    
+                    // 音色データアドレスを設定
+                    pc88.cpu.writeMemory(at: voiceDataAddress, value: UInt8(voiceDataAddress & 0xFF))
+                    pc88.cpu.writeMemory(at: voiceDataAddress + 1, value: UInt8((voiceDataAddress >> 8) & 0xFF))
+                    
+                    pc88.appendLog("曲データアドレス: 0x\(String(format: "%X", songDataAddress))")
+                    pc88.appendLog("音色データアドレス: 0x\(String(format: "%X", voiceDataAddress))")
+                    
+                    // D88データが利用可能であることを示す
+                    pc88.isD88DataAvailable = true
+                }
+            } else {
+                pc88.appendLog("PMD88シグネチャ: 見つかりません")
+                pc88.isD88DataAvailable = false
+            }
+            
+            // IPLブートの準備が整っているか確認
+            if let iplFound = systemInfo["iplFound"] as? Bool, iplFound {
+                pc88.appendLog("\n===== IPLブート準備 =====")
+                pc88.appendLog("IPLブート可能: はい")
+                
+                // IPLコードをメモリにロード
+                if let iplCode = d88Disk.loadIPLCode() {
+                    pc88.appendLog("IPLコードをメモリにロードしています...")
+                    // IPLコードをメモリの適切な位置にロード（通常は0x0000から）
+                    for (i, byte) in iplCode.enumerated() {
+                        pc88.cpu.writeMemory(at: i, value: byte)
+                    }
+                    pc88.appendLog("IPLコードのロード完了")
                 }
             }
-            
-            if foundPMD {
-                pc88.appendLog("PMD88プログラムが見つかりました。")
-                // 曲データと音色データの位置を推定
-                pc88.appendLog("曲データと音色データの位置を推定しています...")
-                
-                // 曲データアドレスを0x4C00に設定
-                pc88.cpu.writeMemory(at: 0x4C00, value: 0x00)
-                pc88.cpu.writeMemory(at: 0x4C01, value: 0x4C)
-                
-                // 音色データアドレスを0x6000に設定
-                pc88.cpu.writeMemory(at: 0x6000, value: 0x00)
-                pc88.cpu.writeMemory(at: 0x6001, value: 0x60)
-                
-                pc88.appendLog("曲データアドレス: 0x4C00")
-                pc88.appendLog("音色データアドレス: 0x6000")
-            } else {
-                pc88.appendLog("PMD88シグネチャが見つかりませんでした。")
-            }
         } else {
-            pc88.appendLog("D88データが不完全です。解析できません。")
+            pc88.appendLog("D88データの解析に失敗しました。無効なフォーマットの可能性があります。")
         }
     }
     
@@ -567,15 +603,16 @@ struct ContentView: View {
         // RunLoop.mainでタイマーを作成してメインスレッドで確実に実行されるようにする
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak pc88Ref = pc88] _ in
             // 弱参照を使用して循環参照を防止
-            guard let pc88Ref = pc88Ref else { return }
+            guard pc88Ref != nil else { return }
             
-            // チャンネル情報を更新
-            pc88Ref.updateChannelInfo()
+            // チャンネル情報の更新を一時的に無効化
+            // pc88Ref.updateChannelInfo()
             
-            // デバッグ情報を定期的に更新
-            if self.isPMDPlaying && pc88Ref.pmd.isRunning() {
-                pc88Ref.debug.printPMD88WorkingAreaStatus()
-            }
+            // デバッグ情報の更新を一時的に無効化
+            // FM音源処理を完全に無効化
+            // if self.isPMDPlaying && pc88Ref.pmd.isRunning() {
+            //     pc88Ref.debug.printPMD88WorkingAreaStatus()
+            // }
         }
         
         // メインスレッドのランループにタイマーを追加
@@ -621,16 +658,25 @@ struct ContentView: View {
                 
                 // 状態を更新
                 playbackState = .playing
-                isPMDPlaying = true
+                // FM音源処理を無効化
+                isPMDPlaying = false
                 
-                // 再生処理を実行
+                // PC88エミュレータを起動
                 DispatchQueue.global(qos: .userInitiated).async { [weak pc88Ref = pc88] in
                     guard let pc88Ref = pc88Ref else { return }
-                    pc88Ref.runPMDMusic()
+                    
+                    // D88ファイルからIPLをロードしてブート
+                    if let d88Data = pc88Ref.d88Data {
+                        pc88Ref.loadIPL(from: d88Data)
+                        pc88Ref.bootFromIPL()
+                    } else {
+                        pc88Ref.appendLog("❌ D88ファイルがロードされていません")
+                    }
                     
                     // 状態更新をメインスレッドで行う
                     DispatchQueue.main.async {
-                        pc88Ref.pmd.updatePlaybackState(.playing)
+                        // 再生状態を更新（UIの整合性のため）
+                        pc88Ref.status = "PC-88エミュレータ実行中"
                     }
                 }
                 
